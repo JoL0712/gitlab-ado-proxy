@@ -129,10 +129,38 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
   // Middleware: Auth conversion and context setup.
   app.use('/api/v4/*', async (c, next) => {
-    // Support both PRIVATE-TOKEN header (GitLab style) and Bearer token (OAuth style).
+    // Support multiple authentication methods:
+    // 1. PRIVATE-TOKEN header (GitLab style)
+    // 2. Bearer token (OAuth style)
+    // 3. Basic auth (git client style) - may contain glpat token
     const privateToken = c.req.header('PRIVATE-TOKEN');
     const authHeader = c.req.header('Authorization');
-    let gitlabToken = privateToken || authHeader?.replace(/^Bearer\s+/i, '');
+    let gitlabToken = privateToken;
+
+    if (!gitlabToken && authHeader) {
+      if (authHeader.startsWith('Bearer ')) {
+        gitlabToken = authHeader.replace(/^Bearer\s+/i, '');
+      } else if (authHeader.startsWith('Basic ')) {
+        // Basic auth: base64 of "username:password" where password might be glpat-* token.
+        try {
+          const base64Credentials = authHeader.replace(/^Basic\s+/i, '');
+          const decoded = atob(base64Credentials);
+          // Format could be ":glpat-xxx" or "user:glpat-xxx" or "gitlab-ci-token:glpat-xxx".
+          const colonIndex = decoded.indexOf(':');
+          if (colonIndex !== -1) {
+            const password = decoded.substring(colonIndex + 1);
+            // Use the password as the token (it might be a glpat or regular PAT).
+            gitlabToken = password;
+            console.log('[Auth] Extracted token from Basic auth:', {
+              format: decoded.substring(0, colonIndex) || '(empty username)',
+              tokenPrefix: password.substring(0, 10) + '...',
+            });
+          }
+        } catch (e) {
+          console.warn('[Auth] Failed to decode Basic auth header:', e);
+        }
+      }
+    }
 
     // Validate token exists and is not "undefined" or empty.
     if (!gitlabToken || gitlabToken === 'undefined' || gitlabToken.trim() === '') {
@@ -156,7 +184,11 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     }
 
     let adoAuthHeader: string;
-    let tokenSource = privateToken ? 'PRIVATE-TOKEN' : 'Authorization';
+    let tokenSource = privateToken 
+      ? 'PRIVATE-TOKEN' 
+      : authHeader?.startsWith('Basic ') 
+        ? 'Basic-Auth' 
+        : 'Authorization';
 
     // Check if this is one of our generated project access tokens (glpat-*).
     if (gitlabToken.startsWith('glpat-')) {
@@ -3091,8 +3123,104 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     }
   });
 
+  // GET /api/v4/version - Return GitLab version information.
+  // This endpoint is often called by clients to verify the GitLab instance.
+  app.get('/api/v4/version', (c) => {
+    console.log('[GET /api/v4/version] Returning fake GitLab version');
+    return c.json({
+      version: '16.8.0',
+      revision: 'gitlab-ado-proxy',
+      enterprise: false,
+    });
+  });
+
+  // GET /api/v4/personal_access_tokens/self - Get info about current token.
+  // This endpoint is used by clients to verify the token is valid.
+  app.get('/api/v4/personal_access_tokens/self', async (c) => {
+    console.log('[GET /api/v4/personal_access_tokens/self] Token verification request');
+
+    // Return token info based on what type of token was used.
+    // For glpat-* tokens, we can look up the stored token data.
+    const privateToken = c.req.header('PRIVATE-TOKEN');
+    const authHeader = c.req.header('Authorization');
+    const gitlabToken = privateToken || authHeader?.replace(/^Bearer\s+/i, '');
+
+    if (gitlabToken?.startsWith('glpat-')) {
+      // Look up the stored token.
+      const storage = getStorage();
+      const tokenLookup = await storage.get<{ projectId: string; tokenId: number }>(`token_lookup:${gitlabToken}`);
+      
+      if (tokenLookup) {
+        const tokenData = await storage.get<StoredAccessToken>(
+          `access_token:${tokenLookup.projectId}:${tokenLookup.tokenId}`
+        );
+
+        if (tokenData && !tokenData.revoked) {
+          console.log('[GET /api/v4/personal_access_tokens/self] Returning stored token info:', {
+            tokenId: tokenData.id,
+            name: tokenData.name,
+          });
+
+          return c.json({
+            id: tokenData.id,
+            name: tokenData.name,
+            revoked: tokenData.revoked,
+            created_at: tokenData.createdAt,
+            scopes: tokenData.scopes,
+            user_id: tokenData.userId,
+            last_used_at: tokenData.lastUsedAt,
+            active: !tokenData.revoked,
+            expires_at: tokenData.expiresAt,
+            access_level: tokenData.accessLevel,
+          });
+        }
+      }
+    }
+
+    // For regular ADO PATs, return a generic response.
+    console.log('[GET /api/v4/personal_access_tokens/self] Returning generic token info');
+    return c.json({
+      id: 1,
+      name: 'ado-pat',
+      revoked: false,
+      created_at: new Date().toISOString(),
+      scopes: ['api', 'read_repository', 'write_repository'],
+      user_id: 1,
+      last_used_at: new Date().toISOString(),
+      active: true,
+      expires_at: null,
+      access_level: 40,
+    });
+  });
+
+  // GET /api/v4/metadata - GitLab instance metadata (used for version/capability checks).
+  app.get('/api/v4/metadata', (c) => {
+    console.log('[GET /api/v4/metadata] Returning fake GitLab metadata');
+    return c.json({
+      version: '16.8.0',
+      revision: 'gitlab-ado-proxy',
+      kas: {
+        enabled: false,
+        externalUrl: null,
+        version: null,
+      },
+      enterprise: false,
+    });
+  });
+
   // Catch-all for unsupported endpoints.
+  // This helps debug what endpoints Cursor is calling that we haven't implemented.
   app.all('/api/v4/*', (c) => {
+    console.warn('[UNHANDLED ENDPOINT]', {
+      method: c.req.method,
+      path: c.req.path,
+      url: c.req.url,
+      headers: {
+        'content-type': c.req.header('content-type'),
+        'private-token': c.req.header('private-token') ? 'present' : 'absent',
+        'authorization': c.req.header('authorization') ? 'present' : 'absent',
+      },
+    });
     return c.json(
       {
         error: 'Not Implemented',
