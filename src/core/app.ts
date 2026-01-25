@@ -58,11 +58,35 @@ export function createApp(config: ProxyConfig): Hono<Env> {
   });
 
   /**
+   * Convert a string to URL-safe format for comparison.
+   */
+  function toUrlSafe(str: string): string {
+    return str.toLowerCase().replace(/\s+/g, '-');
+  }
+
+  /**
+   * Find the actual project name from allowed projects by matching URL-safe versions.
+   */
+  function findActualProjectName(urlSafeName: string, allowedProjects?: string[]): string | null {
+    if (!allowedProjects || allowedProjects.length === 0) {
+      return null;
+    }
+    
+    const urlSafeLower = urlSafeName.toLowerCase();
+    for (const project of allowedProjects) {
+      if (toUrlSafe(project) === urlSafeLower) {
+        return project;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Helper function to fetch repository info and extract project name.
    * Supports multiple identifier formats:
    * - Repository GUID (e.g., "d1567dcd-066c-4a96-897a-20860d99a3c0")
    * - Repository name only (e.g., "my-repo")
-   * - GitLab-style path (e.g., "ProjectName/RepoName" or "Project%20Name/repo-name")
+   * - GitLab-style path (e.g., "project-name/repo-name" or "Project%20Name/repo-name")
    * Also enforces project access restrictions if allowedProjects is configured.
    */
   async function fetchRepositoryInfo(
@@ -80,41 +104,63 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         originalId: repositoryId,
         decodedId,
         hasSlash: decodedId.includes('/'),
+        allowedProjects,
       });
 
       // Check if this is a GitLab-style path (project/repo format).
       if (decodedId.includes('/')) {
         const slashIndex = decodedId.lastIndexOf('/');
-        const projectName = decodedId.substring(0, slashIndex);
-        const repoName = decodedId.substring(slashIndex + 1);
+        const projectPathPart = decodedId.substring(0, slashIndex);
+        const repoPathPart = decodedId.substring(slashIndex + 1);
 
         console.log('[fetchRepositoryInfo] Parsed as project/repo path:', {
-          projectName,
-          repoName,
+          projectPathPart,
+          repoPathPart,
         });
 
-        // Check if project is in allowed list.
-        if (allowedProjects && allowedProjects.length > 0) {
-          const allowedLower = allowedProjects.map((p) => p.toLowerCase());
-          if (!allowedLower.includes(projectName.toLowerCase())) {
-            console.warn('[fetchRepositoryInfo] Project not in allowed list:', {
-              projectName,
-              allowedProjects,
-            });
-            return null;
+        // Try to find the actual project name from allowed projects.
+        // The path might be URL-safe (main-system) but we need the actual name (Main System).
+        let actualProjectName = findActualProjectName(projectPathPart, allowedProjects);
+        
+        // If not found in allowed projects, use the path as-is (might be the actual name).
+        if (!actualProjectName) {
+          // Check if the path matches an allowed project directly (case-insensitive).
+          if (allowedProjects && allowedProjects.length > 0) {
+            const match = allowedProjects.find(
+              (p) => p.toLowerCase() === projectPathPart.toLowerCase()
+            );
+            if (match) {
+              actualProjectName = match;
+            } else {
+              console.warn('[fetchRepositoryInfo] Project not in allowed list:', {
+                projectPathPart,
+                urlSafeVersion: toUrlSafe(projectPathPart),
+                allowedProjects,
+                allowedUrlSafe: allowedProjects.map(toUrlSafe),
+              });
+              return null;
+            }
+          } else {
+            // No allowed projects restriction - use the path as-is.
+            actualProjectName = projectPathPart;
           }
         }
 
-        // Fetch repository directly using project-level API.
-        const repoUrl = MappingService.buildAdoUrl(
+        console.log('[fetchRepositoryInfo] Resolved project name:', {
+          pathPart: projectPathPart,
+          actualName: actualProjectName,
+        });
+
+        // Try to fetch using the actual project name first.
+        let repoUrl = MappingService.buildAdoUrl(
           adoBaseUrl,
-          `/${encodeURIComponent(projectName)}/_apis/git/repositories/${encodeURIComponent(repoName)}`,
+          `/${encodeURIComponent(actualProjectName)}/_apis/git/repositories/${encodeURIComponent(repoPathPart)}`,
           adoApiVersion
         );
 
         console.log('[fetchRepositoryInfo] Fetching from project-level URL:', { url: repoUrl });
 
-        const response = await fetch(repoUrl, {
+        let response = await fetch(repoUrl, {
           method: 'GET',
           headers: {
             Authorization: adoAuthHeader,
@@ -132,10 +178,50 @@ export function createApp(config: ProxyConfig): Hono<Env> {
           return { repo, projectName: repo.project.name };
         }
 
-        const errorText = await response.text();
-        console.warn('[fetchRepositoryInfo] Failed to fetch via project path:', {
-          status: response.status,
-          error: errorText.substring(0, 200),
+        // If failed, try searching within the project for a repo matching the URL-safe name.
+        console.log('[fetchRepositoryInfo] Direct lookup failed, searching within project:', {
+          project: actualProjectName,
+          repoPath: repoPathPart,
+        });
+
+        const listUrl = MappingService.buildAdoUrl(
+          adoBaseUrl,
+          `/${encodeURIComponent(actualProjectName)}/_apis/git/repositories`,
+          adoApiVersion
+        );
+
+        const listResponse = await fetch(listUrl, {
+          method: 'GET',
+          headers: {
+            Authorization: adoAuthHeader,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (listResponse.ok) {
+          const data = (await listResponse.json()) as { value: ADORepository[] };
+          
+          // Find repo by name or URL-safe name.
+          const matchingRepo = data.value.find(
+            (r) =>
+              r.name.toLowerCase() === repoPathPart.toLowerCase() ||
+              toUrlSafe(r.name) === repoPathPart.toLowerCase()
+          );
+
+          if (matchingRepo) {
+            console.log('[fetchRepositoryInfo] Found repository by search:', {
+              repoId: matchingRepo.id,
+              repoName: matchingRepo.name,
+              projectName: matchingRepo.project.name,
+            });
+            return { repo: matchingRepo, projectName: matchingRepo.project.name };
+          }
+        }
+
+        console.warn('[fetchRepositoryInfo] Failed to find repository:', {
+          projectPathPart,
+          repoPathPart,
+          actualProjectName,
         });
         return null;
       }
@@ -1541,6 +1627,11 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     const { ctx } = c.var;
     const projectId = c.req.param('id');
 
+    console.log('[GET /api/v4/projects/:id] Request:', {
+      projectId,
+      decodedId: decodeURIComponent(projectId),
+    });
+
     try {
       // Use the helper function to fetch repository info (handles both GUIDs and names).
       const repoInfo = await fetchRepositoryInfo(
@@ -1552,6 +1643,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       );
 
       if (!repoInfo) {
+        console.warn('[GET /api/v4/projects/:id] Repository not found:', { projectId });
         return c.json(
           {
             error: 'Not Found',
@@ -1563,6 +1655,11 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       }
 
       const gitlabProject = MappingService.mapRepositoryToProject(repoInfo.repo);
+      console.log('[GET /api/v4/projects/:id] Success:', {
+        projectId,
+        repoName: repoInfo.repo.name,
+        adoProject: repoInfo.projectName,
+      });
       return c.json(gitlabProject);
     } catch (error) {
       console.error('Error fetching project:', error);

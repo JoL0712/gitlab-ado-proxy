@@ -7,6 +7,7 @@
 export interface GitLabProject {
   id: number | string;
   name: string;
+  path: string;
   description: string | null;
   default_branch: string;
   visibility: 'private' | 'internal' | 'public';

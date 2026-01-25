@@ -36,24 +36,37 @@ export class MappingService {
   }
 
   /**
+   * Convert a string to a URL-safe path (lowercase, spaces to hyphens).
+   */
+  static toUrlSafePath(str: string): string {
+    return str.toLowerCase().replace(/\s+/g, '-');
+  }
+
+  /**
    * Map ADO Repository to GitLab Project format.
    */
   static mapRepositoryToProject(repo: ADORepository): GitLabProject {
+    // Create URL-safe paths.
+    const projectPath = this.toUrlSafePath(repo.project.name);
+    const repoPath = this.toUrlSafePath(repo.name);
+    const pathWithNamespace = `${projectPath}/${repoPath}`;
+
     return {
       id: repo.id,
       name: repo.name,
+      path: repoPath,
       description: null,
       default_branch: repo.defaultBranch?.replace('refs/heads/', '') ?? 'main',
       visibility: repo.project.visibility === 'public' ? 'public' : 'private',
       web_url: repo.webUrl,
       ssh_url_to_repo: repo.sshUrl ?? '',
       http_url_to_repo: repo.remoteUrl ?? '',
-      path_with_namespace: `${repo.project.name}/${repo.name}`,
+      path_with_namespace: pathWithNamespace,
       namespace: {
         id: parseInt(repo.project.id, 16) || 0,
         name: repo.project.name,
-        path: repo.project.name.toLowerCase().replace(/\s+/g, '-'),
-        full_path: repo.project.name.toLowerCase().replace(/\s+/g, '-'),
+        path: projectPath,
+        full_path: projectPath,
       },
       created_at: new Date().toISOString(),
       last_activity_at: new Date().toISOString(),
