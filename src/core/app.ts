@@ -925,6 +925,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
           return {
             id: item.item.value.id,
             name: item.item.value.name,
+            description: item.item.value.description,
             revoked: item.item.value.revoked,
             created_at: item.item.value.createdAt,
             scopes: item.item.value.scopes,
@@ -969,6 +970,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       console.log('[POST /api/v4/projects/:id/access_tokens] Request:', {
         projectId,
         name: body.name,
+        description: body.description,
         scopes: body.scopes,
         accessLevel: body.access_level,
         expiresAt: body.expires_at,
@@ -1027,8 +1029,9 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         id: tokenId,
         projectId,
         name: body.name,
+        description: body.description ?? null,
         scopes: body.scopes,
-        accessLevel: body.access_level ?? 30,
+        accessLevel: body.access_level ?? 40,
         adoPat,
         createdAt: new Date().toISOString(),
         expiresAt,
@@ -1057,6 +1060,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       const response: GitLabProjectAccessToken = {
         id: tokenId,
         name: body.name,
+        description: storedToken.description,
         revoked: false,
         created_at: storedToken.createdAt,
         scopes: body.scopes,
@@ -1064,8 +1068,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         last_used_at: null,
         active: true,
         expires_at: expiresAtDate,
-        token: tokenValue,
         access_level: storedToken.accessLevel,
+        token: tokenValue,
       };
 
       console.log('[POST /api/v4/projects/:id/access_tokens] Created token:', {
@@ -3286,6 +3290,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
           return c.json({
             id: tokenData.id,
             name: tokenData.name,
+            description: tokenData.description,
             revoked: tokenData.revoked,
             created_at: tokenData.createdAt,
             scopes: tokenData.scopes,
@@ -3304,6 +3309,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     return c.json({
       id: 1,
       name: 'ado-pat',
+      description: null,
       revoked: false,
       created_at: new Date().toISOString(),
       scopes: ['api', 'read_repository', 'write_repository'],

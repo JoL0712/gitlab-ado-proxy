@@ -102,6 +102,7 @@ export interface GitLabUser {
 export interface GitLabProjectAccessToken {
   id: number;
   name: string;
+  description?: string | null;
   revoked: boolean;
   created_at: string;
   scopes: string[];
@@ -109,14 +110,15 @@ export interface GitLabProjectAccessToken {
   last_used_at: string | null;
   active: boolean;
   expires_at: string | null;
+  access_level: number;
   // Only included when creating a new token.
   token?: string;
-  access_level?: number;
 }
 
 // GitLab Project Access Token Create Payload.
 export interface GitLabProjectAccessTokenCreate {
   name: string;
+  description?: string;
   scopes: string[];
   access_level?: number;
   expires_at?: string;
@@ -127,6 +129,7 @@ export interface StoredAccessToken {
   id: number;
   projectId: string;
   name: string;
+  description: string | null;
   scopes: string[];
   accessLevel: number;
   // The actual ADO PAT that this token maps to.
