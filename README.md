@@ -63,6 +63,14 @@ A cloud-agnostic middleware that emulates GitLab's REST API and proxies requests
 | `PUT /api/v4/projects/:id/merge_requests/:iid/merge` | `PATCH /_apis/git/repositories/:id/pullrequests/:id` | Merge a merge request |
 | `GET /api/v4/projects/:id/merge_requests/:iid/changes` | `GET /_apis/git/repositories/:id/pullrequests/:id/iterations` | Get MR changes/diff |
 
+### Project Access Tokens
+
+| GitLab API | Description |
+|------------|-------------|
+| `GET /api/v4/projects/:id/access_tokens` | List project access tokens |
+| `POST /api/v4/projects/:id/access_tokens` | Create project access token (issues proxy-managed `glpat-*` token) |
+| `DELETE /api/v4/projects/:id/access_tokens/:token_id` | Revoke project access token |
+
 ### OAuth 2.0 Endpoints
 
 | Endpoint | Description |
@@ -70,6 +78,24 @@ A cloud-agnostic middleware that emulates GitLab's REST API and proxies requests
 | `GET /oauth/authorize` | OAuth authorization endpoint (shows authorization form) |
 | `POST /oauth/authorize` | Handles authorization form submission |
 | `POST /oauth/token` | Token exchange endpoint (exchanges authorization code for access token) |
+
+### Instance Information
+
+| GitLab API | Description |
+|------------|-------------|
+| `GET /api/v4/version` | Returns GitLab version information |
+| `GET /api/v4/metadata` | Returns GitLab instance metadata |
+| `GET /api/v4/personal_access_tokens/self` | Returns info about current token |
+| `GET /api/v4/application/settings` | Returns application settings |
+| `GET /api/v4/groups` | Returns empty groups list |
+| `GET /api/v4/namespaces` | Returns empty namespaces list |
+| `GET /api/v4/features` | Returns empty features list |
+
+### Additional Repository Endpoints
+
+| GitLab API | Azure DevOps API | Description |
+|------------|------------------|-------------|
+| `GET /api/v4/projects/:id/repository/refs` | `GET /_apis/git/repositories/:id/refs` | List refs (branches/tags) |
 
 ## Architecture
 
