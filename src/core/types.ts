@@ -355,6 +355,10 @@ export interface ProxyConfig {
   adoBaseUrl: string;
   // Optional: Override the API version.
   adoApiVersion?: string;
+  // Optional: OAuth client ID for validating OAuth requests.
+  oauthClientId?: string;
+  // Optional: OAuth client secret for validating OAuth token exchange.
+  oauthClientSecret?: string;
 }
 
 /**

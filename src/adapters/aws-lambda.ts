@@ -10,6 +10,8 @@ import { createApp } from '../core/app.js';
 const config = {
   adoBaseUrl: process.env.ADO_BASE_URL ?? 'https://dev.azure.com/org',
   adoApiVersion: process.env.ADO_API_VERSION ?? '7.1',
+  oauthClientId: process.env.OAUTH_CLIENT_ID,
+  oauthClientSecret: process.env.OAUTH_CLIENT_SECRET,
 };
 
 // Create the app with configuration.

@@ -21,6 +21,11 @@ environment = "prod"
 # Azure DevOps API version.
 ado_api_version = "7.1"
 
+# OAuth configuration (optional, but recommended for security).
+# If set, only requests with matching client_id and client_secret will be allowed.
+oauth_client_id     = ""
+oauth_client_secret = ""
+
 # Lambda configuration.
 lambda_timeout = 30
 lambda_memory  = 256

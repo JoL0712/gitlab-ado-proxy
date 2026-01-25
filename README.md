@@ -63,6 +63,14 @@ A cloud-agnostic middleware that emulates GitLab's REST API and proxies requests
 | `PUT /api/v4/projects/:id/merge_requests/:iid/merge` | `PATCH /_apis/git/repositories/:id/pullrequests/:id` | Merge a merge request |
 | `GET /api/v4/projects/:id/merge_requests/:iid/changes` | `GET /_apis/git/repositories/:id/pullrequests/:id/iterations` | Get MR changes/diff |
 
+### OAuth 2.0 Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /oauth/authorize` | OAuth authorization endpoint (shows authorization form) |
+| `POST /oauth/authorize` | Handles authorization form submission |
+| `POST /oauth/token` | Token exchange endpoint (exchanges authorization code for access token) |
+
 ## Architecture
 
 ```
@@ -102,9 +110,48 @@ npm install
 
 1. Set environment variables:
 
+**Option 1: Using a `.env` file (Recommended)**
+
+Create a `.env` file in the project root:
+
+```bash
+# Copy the example file
+cp .env.example .env
+```
+
+Then edit `.env` with your values:
+
+```env
+ADO_BASE_URL=https://dev.azure.com/your-org
+ADO_API_VERSION=7.1
+PORT=3000
+```
+
+**Option 2: Using command line (Windows)**
+
+**PowerShell:**
+```powershell
+$env:ADO_BASE_URL="https://dev.azure.com/your-org"
+$env:ADO_API_VERSION="7.1"
+$env:PORT="3000"
+npm run dev
+```
+
+**Command Prompt (CMD):**
+```cmd
+set ADO_BASE_URL=https://dev.azure.com/your-org
+set ADO_API_VERSION=7.1
+set PORT=3000
+npm run dev
+```
+
+**Option 3: Using command line (Linux/Mac)**
+
 ```bash
 export ADO_BASE_URL="https://dev.azure.com/your-org"
 export ADO_API_VERSION="7.1"
+export PORT=3000
+npm run dev
 ```
 
 2. Start the development server:
@@ -169,15 +216,42 @@ terraform apply
 terraform output function_url
 ```
 
-## Usage with Cursor
+## Usage with Cursor Cloud
 
-Once deployed, configure your Cursor Cloud Agent to use the proxy URL as the GitLab base URL:
+### Option 1: OAuth Flow (Recommended for Cursor Cloud)
 
+1. Deploy the proxy and get the function URL:
+   ```bash
+   terraform output function_url
+   ```
+
+2. In Cursor Cloud, go to Integrations → GitLab Self-Hosted
+
+3. Fill in the form:
+   - **GitLab Hostname**: Your proxy URL (e.g., `https://your-function-url.lambda-url.us-east-1.on.aws`)
+   - **Application ID**: The value you set in `OAUTH_CLIENT_ID` environment variable (or any value if not set)
+   - **Secret**: The value you set in `OAUTH_CLIENT_SECRET` environment variable (or any value if not set)
+
+   **Security Note**: For production, set `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` environment variables to restrict OAuth access. If these are not set, any client_id and client_secret will be accepted.
+
+4. Click "Register" - Cursor will redirect you to the authorization page
+
+5. Enter your Azure DevOps Personal Access Token (PAT) in the authorization form
+
+6. Click "Authorize" - Cursor will complete the OAuth flow and use the token for API calls
+
+### Option 2: Direct API Token
+
+You can also use the proxy directly with the `PRIVATE-TOKEN` header:
+
+```bash
+curl -H "PRIVATE-TOKEN: your-ado-pat" \
+  https://your-function-url.lambda-url.us-east-1.on.aws/api/v4/projects/your-repo-id
 ```
-https://your-function-url.lambda-url.us-east-1.on.aws
-```
 
-Use your Azure DevOps PAT as the GitLab private token.
+**Note**: Your Azure DevOps PAT should have appropriate permissions:
+- **Code**: Read (for projects and branches)
+- **Code**: Write (for creating pull requests)
 
 ## Environment Variables
 
@@ -185,6 +259,8 @@ Use your Azure DevOps PAT as the GitLab private token.
 |----------|-------------|---------|
 | `ADO_BASE_URL` | Azure DevOps organization URL (project-agnostic) | Required |
 | `ADO_API_VERSION` | Azure DevOps API version | `7.1` |
+| `OAUTH_CLIENT_ID` | OAuth client ID for validating OAuth requests (optional, recommended for security) | None (accepts any) |
+| `OAUTH_CLIENT_SECRET` | OAuth client secret for validating token exchange (optional, recommended for security) | None (accepts any) |
 | `PORT` | Local server port (Node.js only) | `3000` |
 
 ## API Mapping Details

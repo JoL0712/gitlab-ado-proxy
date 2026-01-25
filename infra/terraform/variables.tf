@@ -45,6 +45,20 @@ variable "ado_api_version" {
   default     = "7.1"
 }
 
+variable "oauth_client_id" {
+  description = "OAuth client ID for validating OAuth requests (optional, recommended for security)"
+  type        = string
+  default     = ""
+  sensitive   = false
+}
+
+variable "oauth_client_secret" {
+  description = "OAuth client secret for validating token exchange (optional, recommended for security)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 ###############################################################################
 # Lambda Configuration
 ###############################################################################

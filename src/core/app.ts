@@ -13,6 +13,7 @@ import type {
   ADOTreeResponse,
   ADOCommitsResponse,
   ADOCommit,
+  ADOUserProfile,
 } from './types.js';
 
 // Create the Hono app with typed context.
@@ -103,13 +104,26 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
   // Middleware: Auth conversion and context setup.
   app.use('/api/v4/*', async (c, next) => {
-    const gitlabToken = c.req.header('PRIVATE-TOKEN');
+    // Support both PRIVATE-TOKEN header (GitLab style) and Bearer token (OAuth style).
+    const privateToken = c.req.header('PRIVATE-TOKEN');
+    const authHeader = c.req.header('Authorization');
+    const gitlabToken = privateToken || authHeader?.replace(/^Bearer\s+/i, '');
 
-    if (!gitlabToken) {
+    // Validate token exists and is not "undefined" or empty.
+    if (!gitlabToken || gitlabToken === 'undefined' || gitlabToken.trim() === '') {
+      console.warn('[Auth] Missing or invalid authentication token:', {
+        path: c.req.path,
+        method: c.req.method,
+        hasPrivateToken: !!privateToken,
+        privateTokenValue: privateToken ? privateToken.substring(0, 10) + '...' : 'none',
+        hasAuthorization: !!authHeader,
+        authorizationValue: authHeader ? authHeader.substring(0, 20) + '...' : 'none',
+        extractedToken: gitlabToken,
+      });
       return c.json(
         {
           error: 'Unauthorized',
-          message: 'PRIVATE-TOKEN header is required',
+          message: 'PRIVATE-TOKEN header or Bearer token is required',
           statusCode: 401,
         },
         401
@@ -125,6 +139,15 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       adoAuthHeader,
     });
 
+    console.log('[Auth] Request authenticated:', {
+      path: c.req.path,
+      method: c.req.method,
+      hasToken: !!gitlabToken,
+      tokenLength: gitlabToken.length,
+      tokenPrefix: gitlabToken.substring(0, 8) + '...',
+      tokenSource: privateToken ? 'PRIVATE-TOKEN' : 'Authorization',
+    });
+
     return next();
   });
 
@@ -138,14 +161,24 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     const { ctx } = c.var;
 
     try {
-      // ADO uses the Connection Data API to get current user info.
-      const profileUrl = MappingService.buildAdoUrl(
+      // Try ConnectionData API first (organization-level endpoint).
+      // Note: ConnectionData requires -preview suffix for version 7.1.
+      const connectionDataApiVersion = ctx.config.adoApiVersion 
+        ? `${ctx.config.adoApiVersion}-preview`
+        : '7.1-preview';
+      const connectionDataUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        '/_apis/connectionData',
-        ctx.config.adoApiVersion ?? '7.1'
+        '/_apis/ConnectionData',
+        connectionDataApiVersion
       );
 
-      const response = await fetch(profileUrl, {
+      console.log('[GET /api/v4/user] Attempting ConnectionData API:', {
+        url: connectionDataUrl,
+        method: 'GET',
+        hasAuth: !!ctx.adoAuthHeader,
+      });
+
+      let response = await fetch(connectionDataUrl, {
         method: 'GET',
         headers: {
           Authorization: ctx.adoAuthHeader,
@@ -153,37 +186,167 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         },
       });
 
+      let usedFallback = false;
+      let profileUrl = connectionDataUrl;
+
+      // If ConnectionData fails, try Profile API as fallback.
       if (!response.ok) {
         const errorText = await response.text();
+        console.warn('[GET /api/v4/user] ConnectionData API failed:', {
+          status: response.status,
+          statusText: response.statusText,
+          url: connectionDataUrl,
+          error: errorText,
+          headers: Object.fromEntries(response.headers.entries()),
+        });
+
+        // Extract organization from base URL.
+        const orgMatch = ctx.config.adoBaseUrl.match(/dev\.azure\.com\/([^\/]+)/);
+        const org = orgMatch ? orgMatch[1] : '';
+
+        // Try Profile API endpoint.
+        profileUrl = `https://vssps.dev.azure.com/${org}/_apis/profile/profiles/me?api-version=5.1`;
+        console.log('[GET /api/v4/user] Falling back to Profile API:', {
+          url: profileUrl,
+          organization: org,
+        });
+
+        usedFallback = true;
+        response = await fetch(profileUrl, {
+          method: 'GET',
+          headers: {
+            Authorization: ctx.adoAuthHeader,
+            'Content-Type': 'application/json',
+          },
+        });
+      }
+
+      // Check content type before processing.
+      const contentType = response.headers.get('Content-Type') ?? '';
+      const isJson = contentType.includes('application/json') || contentType.includes('text/json');
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[GET /api/v4/user] All user API attempts failed:', {
+          status: response.status,
+          statusText: response.statusText,
+          contentType,
+          isJson,
+          error: isJson ? errorText : errorText.substring(0, 500),
+          usedFallback,
+          url: profileUrl,
+        });
         return c.json(
           {
             error: 'ADO API Error',
-            message: errorText,
+            message: isJson ? errorText : `Received ${contentType} instead of JSON. This may indicate an authentication or endpoint issue.`,
             statusCode: response.status,
           },
           response.status as 400 | 401 | 403 | 404 | 500
         );
       }
 
-      const data = (await response.json()) as {
-        authenticatedUser: {
-          id: string;
-          descriptor: string;
-          subjectDescriptor: string;
-          providerDisplayName: string;
-          isActive: boolean;
-          properties: {
-            Account?: { $value: string };
+      // Check if response is actually JSON before parsing.
+      if (!isJson) {
+        const responseText = await response.text();
+        console.error('[GET /api/v4/user] Non-JSON response received:', {
+          contentType,
+          status: response.status,
+          responsePreview: responseText.substring(0, 500),
+          url: profileUrl,
+        });
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: `Expected JSON but received ${contentType}. This may indicate an authentication or endpoint issue.`,
+            statusCode: response.status,
+          },
+          response.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const responseData = (await response.json()) as
+        | {
+            authenticatedUser: {
+              id: string;
+              descriptor: string;
+              subjectDescriptor: string;
+              providerDisplayName: string;
+              isActive: boolean;
+              properties: {
+                Account?: { $value: string };
+              };
+            };
+          }
+        | ADOUserProfile
+        | Record<string, unknown>;
+
+      console.log('[GET /api/v4/user] Success:', {
+        usedFallback,
+        responseType: 'authenticatedUser' in responseData ? 'ConnectionData' : 'Profile',
+        hasData: !!responseData,
+        dataKeys: Object.keys(responseData),
+      });
+
+      // Handle ConnectionData response format.
+      if ('authenticatedUser' in responseData && responseData.authenticatedUser) {
+        const data = responseData as {
+          authenticatedUser: {
+            id: string;
+            descriptor: string;
+            subjectDescriptor: string;
+            providerDisplayName: string;
+            isActive: boolean;
+            properties: {
+              Account?: { $value: string };
+            };
           };
         };
-      };
 
-      // Map to GitLab user format.
+        console.log('[GET /api/v4/user] Parsed ConnectionData response:', {
+          userId: data.authenticatedUser.id,
+          displayName: data.authenticatedUser.providerDisplayName,
+          hasEmail: !!data.authenticatedUser.properties?.Account?.$value,
+        });
+
+        const user = MappingService.mapUserProfileToUser({
+          id: data.authenticatedUser.id,
+          displayName: data.authenticatedUser.providerDisplayName,
+          publicAlias: data.authenticatedUser.providerDisplayName,
+          emailAddress: data.authenticatedUser.properties?.Account?.$value ?? '',
+          coreRevision: 0,
+          timeStamp: new Date().toISOString(),
+          revision: 0,
+        });
+
+        return c.json(user);
+      }
+
+      // Handle Profile API response format.
+      if ('id' in responseData || 'displayName' in responseData) {
+        const profile = responseData as ADOUserProfile;
+        console.log('[GET /api/v4/user] Parsed Profile API response:', {
+          userId: profile.id,
+          displayName: profile.displayName,
+          email: profile.emailAddress,
+          publicAlias: profile.publicAlias,
+        });
+
+        const user = MappingService.mapUserProfileToUser(profile);
+        return c.json(user);
+      }
+
+      // If we can't parse the response, return a generic user.
+      console.warn('[GET /api/v4/user] Unexpected response format:', {
+        responseData,
+        keys: Object.keys(responseData),
+        usedFallback,
+      });
       const user = MappingService.mapUserProfileToUser({
-        id: data.authenticatedUser.id,
-        displayName: data.authenticatedUser.providerDisplayName,
-        publicAlias: data.authenticatedUser.providerDisplayName,
-        emailAddress: data.authenticatedUser.properties?.Account?.$value ?? '',
+        id: 'unknown',
+        displayName: 'User',
+        publicAlias: 'user',
+        emailAddress: '',
         coreRevision: 0,
         timeStamp: new Date().toISOString(),
         revision: 0,
@@ -191,7 +354,10 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
       return c.json(user);
     } catch (error) {
-      console.error('Error fetching user:', error);
+      console.error('[GET /api/v4/user] Exception:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       return c.json(
         {
           error: 'Internal Server Error',
@@ -210,6 +376,20 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     // Query parameters.
     const search = c.req.query('search');
     const perPage = parseInt(c.req.query('per_page') ?? '20', 10);
+    const minAccessLevel = c.req.query('min_access_level');
+    const archived = c.req.query('archived');
+    const page = c.req.query('page');
+    const pagination = c.req.query('pagination');
+
+    console.log('[GET /api/v4/projects] Request:', {
+      search,
+      perPage,
+      minAccessLevel,
+      archived,
+      page,
+      pagination,
+      queryString: c.req.url.split('?')[1] || '',
+    });
 
     try {
       // List all repositories in the organization.
@@ -227,12 +407,43 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         },
       });
 
+      // Check content type before processing.
+      const contentType = response.headers.get('Content-Type') ?? '';
+      const isJson = contentType.includes('application/json') || contentType.includes('text/json');
+
       if (!response.ok) {
         const errorText = await response.text();
+        console.error('[GET /api/v4/projects] ADO API error:', {
+          status: response.status,
+          statusText: response.statusText,
+          contentType,
+          isJson,
+          error: isJson ? errorText : errorText.substring(0, 500),
+          url: reposUrl,
+        });
         return c.json(
           {
             error: 'ADO API Error',
-            message: errorText,
+            message: isJson ? errorText : `Received ${contentType} instead of JSON. This may indicate an authentication or endpoint issue.`,
+            statusCode: response.status,
+          },
+          response.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      // Check if response is actually JSON before parsing.
+      if (!isJson) {
+        const responseText = await response.text();
+        console.error('[GET /api/v4/projects] Non-JSON response received:', {
+          contentType,
+          status: response.status,
+          responsePreview: responseText.substring(0, 500),
+          url: reposUrl,
+        });
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: `Expected JSON but received ${contentType}. This may indicate an authentication or endpoint issue.`,
             statusCode: response.status,
           },
           response.status as 400 | 401 | 403 | 404 | 500
@@ -241,22 +452,46 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
       const data = (await response.json()) as { value: ADORepository[]; count: number };
       
+      console.log('[GET /api/v4/projects] ADO API response:', {
+        totalRepos: data.count,
+        returnedRepos: data.value.length,
+        firstRepo: data.value[0]?.name,
+      });
+      
       // Filter by search term if provided.
       let repos = data.value;
       if (search) {
         const searchLower = search.toLowerCase();
+        const beforeFilter = repos.length;
         repos = repos.filter(
           (r) =>
             r.name.toLowerCase().includes(searchLower) ||
             r.project.name.toLowerCase().includes(searchLower)
         );
+        console.log('[GET /api/v4/projects] After search filter:', {
+          before: beforeFilter,
+          after: repos.length,
+          searchTerm: search,
+        });
       }
 
       // Limit results.
+      const beforeLimit = repos.length;
       repos = repos.slice(0, perPage);
+      console.log('[GET /api/v4/projects] After pagination:', {
+        before: beforeLimit,
+        after: repos.length,
+        perPage,
+      });
 
       // Map to GitLab projects format.
       const projects = repos.map((repo) => MappingService.mapRepositoryToProject(repo));
+
+      console.log('[GET /api/v4/projects] Success:', {
+        returnedProjects: projects.length,
+        projectIds: projects.map((p) => p.id),
+        projectNames: projects.map((p) => p.name),
+      });
 
       return c.json(projects);
     } catch (error) {
@@ -270,6 +505,279 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         500
       );
     }
+  });
+
+  // Simple in-memory store for OAuth authorization codes.
+  // In production, you might want to use a proper cache/store.
+  const oauthCodes = new Map<string, { accessToken: string; expiresAt: number }>();
+
+  // GET /oauth/authorize - OAuth 2.0 authorization endpoint.
+  app.get('/oauth/authorize', async (c) => {
+    const clientId = c.req.query('client_id');
+    const redirectUri = c.req.query('redirect_uri');
+    const state = c.req.query('state');
+    const responseType = c.req.query('response_type');
+    const scope = c.req.query('scope');
+
+    // Validate required parameters.
+    if (!clientId || !redirectUri || !state || responseType !== 'code') {
+      return c.json(
+        {
+          error: 'invalid_request',
+          error_description: 'Missing required parameters',
+          statusCode: 400,
+        },
+        400
+      );
+    }
+
+    // Validate client_id if OAuth client ID is configured.
+    if (config.oauthClientId && clientId !== config.oauthClientId) {
+      console.warn('[OAuth] Invalid client_id:', {
+        provided: clientId,
+        expected: config.oauthClientId,
+        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+      });
+      return c.json(
+        {
+          error: 'invalid_client',
+          error_description: 'Invalid client_id',
+          statusCode: 401,
+        },
+        401
+      );
+    }
+
+    // For a proxy, we'll accept any client_id and show a simple authorization page.
+    // In a real implementation, you'd validate the client_id and show a proper consent page.
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Authorize Application</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 500px; margin: 50px auto; padding: 20px; }
+    .form-group { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; }
+    input[type="text"] { width: 100%; padding: 8px; box-sizing: border-box; }
+    button { background: #007bff; color: white; padding: 10px 20px; border: none; cursor: pointer; }
+    button:hover { background: #0056b3; }
+    .info { background: #f0f0f0; padding: 10px; margin-bottom: 20px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h2>Authorize Application</h2>
+  <div class="info">
+    <p><strong>Application:</strong> ${clientId}</p>
+    <p><strong>Scopes:</strong> ${scope || 'api'}</p>
+  </div>
+  <form method="POST" action="/oauth/authorize">
+    <input type="hidden" name="client_id" value="${clientId}">
+    <input type="hidden" name="redirect_uri" value="${redirectUri}">
+    <input type="hidden" name="state" value="${state}">
+    <input type="hidden" name="response_type" value="${responseType}">
+    <input type="hidden" name="scope" value="${scope || 'api'}">
+    <div class="form-group">
+      <label for="pat">Azure DevOps Personal Access Token:</label>
+      <input type="text" id="pat" name="pat" placeholder="Enter your ADO PAT" required>
+      <small>This token will be used to authenticate with Azure DevOps.</small>
+    </div>
+    <button type="submit">Authorize</button>
+  </form>
+</body>
+</html>
+    `;
+
+    return c.html(html);
+  });
+
+  // POST /oauth/authorize - Handle authorization form submission.
+  app.post('/oauth/authorize', async (c) => {
+    const body = await c.req.parseBody();
+    const clientId = c.req.query('client_id') || body.client_id as string;
+    const redirectUri = c.req.query('redirect_uri') || body.redirect_uri as string;
+    const state = c.req.query('state') || body.state as string;
+    const responseType = c.req.query('response_type') || body.response_type as string;
+    const pat = body.pat as string;
+
+    if (!clientId || !redirectUri || !state || responseType !== 'code' || !pat) {
+      return c.json(
+        {
+          error: 'invalid_request',
+          error_description: 'Missing required parameters',
+          statusCode: 400,
+        },
+        400
+      );
+    }
+
+    // Validate client_id if OAuth client ID is configured.
+    if (config.oauthClientId && clientId !== config.oauthClientId) {
+      console.warn('[OAuth] Invalid client_id in POST:', {
+        provided: clientId,
+        expected: config.oauthClientId,
+        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+      });
+      return c.json(
+        {
+          error: 'invalid_client',
+          error_description: 'Invalid client_id',
+          statusCode: 401,
+        },
+        401
+      );
+    }
+
+    // Generate authorization code.
+    const authCode = Buffer.from(`${Date.now()}-${Math.random()}`).toString('base64url');
+    
+    // Store the PAT with the authorization code (expires in 10 minutes).
+    oauthCodes.set(authCode, {
+      accessToken: pat,
+      expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes.
+    });
+
+    // Redirect back to the application with the authorization code.
+    const redirectUrl = new URL(redirectUri);
+    redirectUrl.searchParams.set('code', authCode);
+    redirectUrl.searchParams.set('state', state);
+
+    return c.redirect(redirectUrl.toString());
+  });
+
+  // POST /oauth/token - OAuth 2.0 token endpoint.
+  app.post('/oauth/token', async (c) => {
+    const body = await c.req.parseBody();
+    const grantType = body.grant_type as string;
+    const code = body.code as string;
+    const clientId = body.client_id as string;
+    const clientSecret = body.client_secret as string;
+
+    if (grantType !== 'authorization_code') {
+      return c.json(
+        {
+          error: 'unsupported_grant_type',
+          error_description: 'Only authorization_code grant type is supported',
+          statusCode: 400,
+        },
+        400
+      );
+    }
+
+    if (!code) {
+      return c.json(
+        {
+          error: 'invalid_request',
+          error_description: 'Missing authorization code',
+          statusCode: 400,
+        },
+        400
+      );
+    }
+
+    // Validate client_id if OAuth client ID is configured.
+    if (config.oauthClientId && clientId !== config.oauthClientId) {
+      console.warn('[OAuth] Invalid client_id in token exchange:', {
+        provided: clientId,
+        expected: config.oauthClientId,
+        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+      });
+      return c.json(
+        {
+          error: 'invalid_client',
+          error_description: 'Invalid client_id',
+          statusCode: 401,
+        },
+        401
+      );
+    }
+
+    // Validate client_secret if OAuth client secret is configured.
+    if (config.oauthClientSecret) {
+      if (!clientSecret || clientSecret !== config.oauthClientSecret) {
+        console.warn('[OAuth] Invalid client_secret in token exchange:', {
+          hasSecret: !!clientSecret,
+          ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+        });
+        return c.json(
+          {
+            error: 'invalid_client',
+            error_description: 'Invalid client_secret',
+            statusCode: 401,
+          },
+          401
+        );
+      }
+    }
+
+    // Look up the authorization code.
+    const codeData = oauthCodes.get(code);
+    if (!codeData) {
+      return c.json(
+        {
+          error: 'invalid_grant',
+          error_description: 'Invalid or expired authorization code',
+          statusCode: 400,
+        },
+        400
+      );
+    }
+
+    // Check if code has expired.
+    if (Date.now() > codeData.expiresAt) {
+      oauthCodes.delete(code);
+      return c.json(
+        {
+          error: 'invalid_grant',
+          error_description: 'Authorization code has expired',
+          statusCode: 400,
+        },
+        400
+      );
+    }
+
+    // Delete the code (one-time use).
+    oauthCodes.delete(code);
+
+    // Return the access token (which is the PAT).
+    // GitLab OAuth tokens are typically valid for 2 hours, but we'll use the PAT directly.
+    return c.json({
+      access_token: codeData.accessToken,
+      token_type: 'Bearer',
+      expires_in: 7200, // 2 hours (GitLab standard).
+      refresh_token: null, // Not implementing refresh tokens for simplicity.
+      scope: 'api',
+    });
+  });
+
+  // GET /api/v4/projects/:id/access_tokens - List project access tokens.
+  // Note: Azure DevOps doesn't have project-level access tokens, so we return an empty array.
+  app.get('/api/v4/projects/:id/access_tokens', async (c) => {
+    const projectId = c.req.param('id');
+
+    console.log('[GET /api/v4/projects/:id/access_tokens] Request:', {
+      projectId,
+    });
+
+    // Azure DevOps uses organization-level Personal Access Tokens, not project-level tokens.
+    // Return an empty array to indicate no project-specific tokens exist.
+    return c.json([]);
+  });
+
+  // POST /api/v4/projects/:id/access_tokens - Create project access token.
+  // Note: Azure DevOps doesn't support project-level access tokens.
+  // Return 200 with empty response to satisfy Cursor Cloud's expectations.
+  app.post('/api/v4/projects/:id/access_tokens', async (c) => {
+    const projectId = c.req.param('id');
+
+    console.log('[POST /api/v4/projects/:id/access_tokens] Request:', {
+      projectId,
+    });
+
+    // Azure DevOps uses organization-level Personal Access Tokens, not project-level tokens.
+    // Return 200 with empty array to indicate no tokens can be created,
+    // but don't block Cursor Cloud from proceeding with other operations.
+    return c.json([]);
   });
 
   // GET /api/v4/projects/:id - Get project (repository) details.
@@ -2277,4 +2785,6 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 export const app = createApp({
   adoBaseUrl: process.env.ADO_BASE_URL ?? 'https://dev.azure.com/org',
   adoApiVersion: process.env.ADO_API_VERSION ?? '7.1',
+  oauthClientId: process.env.OAUTH_CLIENT_ID,
+  oauthClientSecret: process.env.OAUTH_CLIENT_SECRET,
 });
