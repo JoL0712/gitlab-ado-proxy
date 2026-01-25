@@ -916,20 +916,27 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Map stored tokens to GitLab format (without exposing the actual token).
       const tokens: GitLabProjectAccessToken[] = result.items
         .filter((item) => !item.item.value.revoked)
-        .map((item) => ({
-          id: item.item.value.id,
-          name: item.item.value.name,
-          revoked: item.item.value.revoked,
-          created_at: item.item.value.createdAt,
-          scopes: item.item.value.scopes,
-          user_id: item.item.value.userId,
-          last_used_at: item.item.value.lastUsedAt,
-          active: !item.item.value.revoked && (
-            !item.item.value.expiresAt || new Date(item.item.value.expiresAt) > new Date()
-          ),
-          expires_at: item.item.value.expiresAt,
-          access_level: item.item.value.accessLevel,
-        }));
+        .map((item) => {
+          // Convert expires_at to date-only format if present.
+          const expiresAtDate = item.item.value.expiresAt
+            ? item.item.value.expiresAt.split('T')[0]
+            : null;
+
+          return {
+            id: item.item.value.id,
+            name: item.item.value.name,
+            revoked: item.item.value.revoked,
+            created_at: item.item.value.createdAt,
+            scopes: item.item.value.scopes,
+            user_id: item.item.value.userId,
+            last_used_at: item.item.value.lastUsedAt,
+            active: !item.item.value.revoked && (
+              !item.item.value.expiresAt || new Date(item.item.value.expiresAt) > new Date()
+            ),
+            expires_at: expiresAtDate,
+            access_level: item.item.value.accessLevel,
+          };
+        });
 
       console.log('[GET /api/v4/projects/:id/access_tokens] Found tokens:', {
         projectId,
