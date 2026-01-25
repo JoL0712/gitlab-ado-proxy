@@ -2881,7 +2881,9 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       queryParams.push(`scopePath=${encodeURIComponent(path || '/')}`);
       queryParams.push(`recursionLevel=${recursive ? 'Full' : 'OneLevel'}`);
       queryParams.push(`versionDescriptor.version=${encodeURIComponent(ref)}`);
-      queryParams.push('versionDescriptor.versionType=branch');
+      // Detect if ref is a commit SHA (40 hex chars) or a branch name.
+      const isCommitSha = /^[0-9a-f]{40}$/i.test(ref);
+      queryParams.push(`versionDescriptor.versionType=${isCommitSha ? 'commit' : 'branch'}`);
 
       if (queryParams.length > 0) {
         treePath += `?${queryParams.join('&')}`;
@@ -3048,7 +3050,9 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       let itemPath = `/_apis/git/repositories/${repoInfo.repo.id}/items`;
       itemPath += `?path=${encodedPath}`;
       itemPath += `&versionDescriptor.version=${encodeURIComponent(ref)}`;
-      itemPath += '&versionDescriptor.versionType=branch';
+      // Detect if ref is a commit SHA (40 hex chars) or a branch name.
+      const isCommitSha = /^[0-9a-f]{40}$/i.test(ref);
+      itemPath += `&versionDescriptor.versionType=${isCommitSha ? 'commit' : 'branch'}`;
 
       const itemUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
@@ -3111,7 +3115,9 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       let itemPath = `/_apis/git/repositories/${repoInfo.repo.id}/items`;
       itemPath += `?path=${encodedPath}`;
       itemPath += `&versionDescriptor.version=${encodeURIComponent(ref)}`;
-      itemPath += '&versionDescriptor.versionType=branch';
+      // Detect if ref is a commit SHA (40 hex chars) or a branch name.
+      const isCommitSha = /^[0-9a-f]{40}$/i.test(ref);
+      itemPath += `&versionDescriptor.versionType=${isCommitSha ? 'commit' : 'branch'}`;
 
       const itemUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
@@ -3199,7 +3205,9 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       let itemPath = `/_apis/git/repositories/${repoInfo.repo.id}/items`;
       itemPath += `?path=${encodedPath}`;
       itemPath += `&versionDescriptor.version=${encodeURIComponent(ref)}`;
-      itemPath += '&versionDescriptor.versionType=branch';
+      // Detect if ref is a commit SHA (40 hex chars) or a branch name.
+      const isCommitSha = /^[0-9a-f]{40}$/i.test(ref);
+      itemPath += `&versionDescriptor.versionType=${isCommitSha ? 'commit' : 'branch'}`;
       itemPath += '&includeContent=true';
 
       const itemUrl = MappingService.buildAdoUrl(
@@ -3895,6 +3903,194 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       },
       501
     );
+  });
+
+  // ==========================================================================
+  // Git Smart HTTP Protocol Endpoints (for git clone/fetch/push)
+  // ==========================================================================
+
+  // GET /:namespace/:project/info/refs - Git discovery endpoint.
+  app.get('/:namespace/:project/info/refs', async (c) => {
+    const { ctx } = c.var;
+    const namespace = c.req.param('namespace');
+    const project = c.req.param('project');
+    const service = c.req.query('service');
+
+    console.log('[Git Smart HTTP] info/refs request:', {
+      namespace,
+      project,
+      service,
+      hasAuth: !!ctx.adoAuthHeader,
+    });
+
+    if (!service || !['git-upload-pack', 'git-receive-pack'].includes(service)) {
+      return c.text('Invalid service', 400);
+    }
+
+    try {
+      // Resolve repository using our existing helper.
+      const repoPath = `${namespace}/${project}`;
+      const repoInfo = await fetchRepositoryInfo(
+        repoPath,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
+      );
+
+      if (!repoInfo) {
+        console.log('[Git Smart HTTP] Repository not found:', { repoPath });
+        return c.text('Repository not found', 404);
+      }
+
+      // Build ADO Git URL.
+      // ADO Git HTTP format: https://dev.azure.com/{org}/{project}/_git/{repo}/info/refs?service=...
+      const adoGitUrl = `${ctx.config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/info/refs?service=${service}`;
+
+      console.log('[Git Smart HTTP] Proxying to ADO:', { adoGitUrl });
+
+      const response = await fetch(adoGitUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.log('[Git Smart HTTP] ADO error:', {
+          status: response.status,
+          error: errorText.slice(0, 200),
+        });
+        return c.text(errorText, response.status as 400 | 401 | 403 | 404 | 500);
+      }
+
+      // Forward the response with correct content type.
+      const body = await response.arrayBuffer();
+      return c.body(body, 200, {
+        'Content-Type': response.headers.get('Content-Type') ?? `application/x-${service}-advertisement`,
+        'Cache-Control': 'no-cache',
+      });
+    } catch (error) {
+      console.error('[Git Smart HTTP] Error:', error);
+      return c.text('Internal Server Error', 500);
+    }
+  });
+
+  // POST /:namespace/:project/git-upload-pack - Git fetch/clone data.
+  app.post('/:namespace/:project/git-upload-pack', async (c) => {
+    const { ctx } = c.var;
+    const namespace = c.req.param('namespace');
+    const project = c.req.param('project');
+
+    console.log('[Git Smart HTTP] git-upload-pack request:', {
+      namespace,
+      project,
+      hasAuth: !!ctx.adoAuthHeader,
+    });
+
+    try {
+      const repoPath = `${namespace}/${project}`;
+      const repoInfo = await fetchRepositoryInfo(
+        repoPath,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
+      );
+
+      if (!repoInfo) {
+        return c.text('Repository not found', 404);
+      }
+
+      const adoGitUrl = `${ctx.config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-upload-pack`;
+      const requestBody = await c.req.arrayBuffer();
+
+      const response = await fetch(adoGitUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': c.req.header('Content-Type') ?? 'application/x-git-upload-pack-request',
+        },
+        body: requestBody,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.log('[Git Smart HTTP] ADO error:', {
+          status: response.status,
+          error: errorText.slice(0, 200),
+        });
+        return c.text(errorText, response.status as 400 | 401 | 403 | 404 | 500);
+      }
+
+      const body = await response.arrayBuffer();
+      return c.body(body, 200, {
+        'Content-Type': response.headers.get('Content-Type') ?? 'application/x-git-upload-pack-result',
+        'Cache-Control': 'no-cache',
+      });
+    } catch (error) {
+      console.error('[Git Smart HTTP] Error:', error);
+      return c.text('Internal Server Error', 500);
+    }
+  });
+
+  // POST /:namespace/:project/git-receive-pack - Git push data.
+  app.post('/:namespace/:project/git-receive-pack', async (c) => {
+    const { ctx } = c.var;
+    const namespace = c.req.param('namespace');
+    const project = c.req.param('project');
+
+    console.log('[Git Smart HTTP] git-receive-pack request:', {
+      namespace,
+      project,
+      hasAuth: !!ctx.adoAuthHeader,
+    });
+
+    try {
+      const repoPath = `${namespace}/${project}`;
+      const repoInfo = await fetchRepositoryInfo(
+        repoPath,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
+      );
+
+      if (!repoInfo) {
+        return c.text('Repository not found', 404);
+      }
+
+      const adoGitUrl = `${ctx.config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-receive-pack`;
+      const requestBody = await c.req.arrayBuffer();
+
+      const response = await fetch(adoGitUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': c.req.header('Content-Type') ?? 'application/x-git-receive-pack-request',
+        },
+        body: requestBody,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.log('[Git Smart HTTP] ADO error:', {
+          status: response.status,
+          error: errorText.slice(0, 200),
+        });
+        return c.text(errorText, response.status as 400 | 401 | 403 | 404 | 500);
+      }
+
+      const body = await response.arrayBuffer();
+      return c.body(body, 200, {
+        'Content-Type': response.headers.get('Content-Type') ?? 'application/x-git-receive-pack-result',
+        'Cache-Control': 'no-cache',
+      });
+    } catch (error) {
+      console.error('[Git Smart HTTP] Error:', error);
+      return c.text('Internal Server Error', 500);
+    }
   });
 
   return app;
