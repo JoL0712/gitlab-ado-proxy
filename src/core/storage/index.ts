@@ -15,6 +15,8 @@ export type {
 
 // Adapters.
 export { MemoryStorage } from './memory.js';
+export { FileStorage } from './file.js';
+export type { FileStorageConfig } from './file.js';
 export { DynamoDBStorage } from './dynamodb.js';
 export type { DynamoDBStorageConfig } from './dynamodb.js';
 

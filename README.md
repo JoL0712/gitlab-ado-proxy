@@ -110,7 +110,8 @@ src/
 │   ├── index.ts         # Core exports
 │   └── storage/         # Key-value storage abstraction
 │       ├── types.ts     # Storage interface and types
-│       ├── memory.ts    # In-memory adapter (local dev)
+│       ├── memory.ts    # In-memory adapter (ephemeral)
+│       ├── file.ts      # File-backed adapter (local dev, persists across restarts)
 │       ├── dynamodb.ts  # DynamoDB adapter (AWS Lambda)
 │       ├── factory.ts   # Storage factory
 │       └── index.ts     # Storage exports
@@ -332,7 +333,8 @@ curl -H "PRIVATE-TOKEN: your-ado-pat" \
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `STORAGE_TYPE` | Storage adapter type: `memory`, `dynamodb` | `memory` |
+| `STORAGE_TYPE` | Storage adapter type: `file`, `memory`, `dynamodb` | `file` |
+| `STORAGE_FILE_PATH` | Path to JSON file for file adapter | `.data/storage.json` |
 | `STORAGE_TABLE_NAME` | DynamoDB table name (required for `dynamodb` type) | - |
 | `STORAGE_KEY_PREFIX` | Key prefix for namespacing | `gitlab-ado-proxy` |
 | `AWS_REGION` | AWS region for DynamoDB | `us-east-1` |
@@ -345,15 +347,16 @@ The proxy uses a pluggable key-value storage system for OAuth tokens and session
 
 | Adapter | Use Case | Configuration |
 |---------|----------|---------------|
-| `memory` | Local development, testing | Default, no config needed |
+| `file` | Local development (persists across restarts) | Default, writes to `.data/storage.json` |
+| `memory` | Ephemeral testing | Set `STORAGE_TYPE=memory` |
 | `dynamodb` | AWS Lambda, production | Set `STORAGE_TYPE=dynamodb` and `STORAGE_TABLE_NAME` |
 
 ### Local Development
 
-For local development, the default `memory` storage is sufficient:
+For local development, the default `file` storage persists data to `.data/storage.json` so tokens and mappings survive server restarts:
 
 ```bash
-# Uses in-memory storage by default
+# Uses file-backed storage by default (.data/storage.json)
 npm run dev
 ```
 
@@ -428,7 +431,8 @@ npm run typecheck
 - **`src/core/app.ts`**: Hono application with route handlers.
 - **`src/core/storage/`**: Cloud-agnostic key-value storage abstraction.
   - `types.ts`: Storage interface definition.
-  - `memory.ts`: In-memory adapter for local development.
+  - `memory.ts`: In-memory adapter (ephemeral).
+  - `file.ts`: File-backed adapter for local development (persists to JSON).
   - `dynamodb.ts`: DynamoDB adapter for AWS Lambda.
   - `factory.ts`: Creates storage instances based on configuration.
 - **`src/adapters/`**: Runtime-specific adapters.

@@ -5,6 +5,7 @@
 
 import type { KVStorage, StorageConfig } from './types.js';
 import { MemoryStorage } from './memory.js';
+import { FileStorage } from './file.js';
 import { DynamoDBStorage } from './dynamodb.js';
 
 // Singleton storage instance.
@@ -17,6 +18,12 @@ export function createStorage(config: StorageConfig): KVStorage {
   switch (config.type) {
     case 'memory':
       return new MemoryStorage(config.keyPrefix);
+
+    case 'file':
+      return new FileStorage({
+        filePath: config.filePath,
+        keyPrefix: config.keyPrefix,
+      });
 
     case 'dynamodb':
       if (!config.tableName) {
@@ -38,12 +45,14 @@ export function createStorage(config: StorageConfig): KVStorage {
 
 /**
  * Get storage configuration from environment variables.
+ * Defaults to file-backed storage for local development so data survives restarts.
  */
 export function getStorageConfigFromEnv(): StorageConfig {
-  const type = (process.env.STORAGE_TYPE as StorageConfig['type']) ?? 'memory';
+  const type = (process.env.STORAGE_TYPE as StorageConfig['type']) ?? 'file';
 
   return {
     type,
+    filePath: process.env.STORAGE_FILE_PATH ?? '.data/storage.json',
     tableName: process.env.STORAGE_TABLE_NAME ?? process.env.DYNAMODB_TABLE_NAME,
     region: process.env.AWS_REGION ?? process.env.STORAGE_REGION,
     redisUrl: process.env.REDIS_URL ?? process.env.STORAGE_REDIS_URL,
