@@ -342,20 +342,34 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     if (!gitlabToken && authHeader) {
       if (authHeader.startsWith('Bearer ')) {
         gitlabToken = authHeader.replace(/^Bearer\s+/i, '');
-      } else if (authHeader.startsWith('Basic ')) {
+      } else if (authHeader.toLowerCase().startsWith('basic ')) {
         // Basic auth: base64 of "username:password" where password might be glpat-* token.
         try {
-          const base64Credentials = authHeader.replace(/^Basic\s+/i, '');
-          const decoded = atob(base64Credentials);
-          // Format could be ":glpat-xxx" or "user:glpat-xxx" or "gitlab-ci-token:glpat-xxx".
+          const base64Credentials = authHeader.substring(6).trim();
+          // Use Buffer.from for Node.js compatibility.
+          const decoded = Buffer.from(base64Credentials, 'base64').toString('utf-8');
+          console.log('[Auth] Decoding Basic auth:', {
+            base64Length: base64Credentials.length,
+            decodedLength: decoded.length,
+            hasColon: decoded.includes(':'),
+          });
+          // Format could be ":PAT", "user:PAT", "git:PAT", etc.
           const colonIndex = decoded.indexOf(':');
           if (colonIndex !== -1) {
+            const username = decoded.substring(0, colonIndex);
             const password = decoded.substring(colonIndex + 1);
             // Use the password as the token (it might be a glpat or regular PAT).
             gitlabToken = password;
             console.log('[Auth] Extracted token from Basic auth:', {
-              format: decoded.substring(0, colonIndex) || '(empty username)',
+              username: username || '(empty)',
               tokenPrefix: password.substring(0, 10) + '...',
+              tokenLength: password.length,
+            });
+          } else {
+            // No colon - might be just a token.
+            gitlabToken = decoded;
+            console.log('[Auth] Basic auth without colon, using whole value:', {
+              tokenPrefix: decoded.substring(0, 10) + '...',
             });
           }
         } catch (e) {
@@ -1277,8 +1291,10 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         );
       }
 
-      const decoded = atob(authMatch[1]);
-      const adoPat = decoded.startsWith(':') ? decoded.slice(1) : decoded;
+      const decoded = Buffer.from(authMatch[1], 'base64').toString('utf-8');
+      // Extract PAT from "username:password" or ":password" format.
+      const colonIndex = decoded.indexOf(':');
+      const adoPat = colonIndex !== -1 ? decoded.substring(colonIndex + 1) : decoded;
 
       // Generate a unique token ID and the token value itself.
       // Use a smaller ID to stay within 32-bit integer range that some systems expect.
