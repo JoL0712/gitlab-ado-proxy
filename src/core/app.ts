@@ -1256,6 +1256,110 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     }
   });
 
+  // GET /api/v4/projects/:id/repository/refs - List refs (branches and tags).
+  // Some clients use this instead of /branches.
+  app.get('/api/v4/projects/:id/repository/refs', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+    const search = c.req.query('search') || '';
+
+    console.log('[GET /api/v4/projects/:id/repository/refs] Request:', {
+      projectId,
+      search,
+      hasAuth: !!ctx.adoAuthHeader,
+    });
+
+    try {
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Fetch refs from ADO.
+      let refsUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/${repoInfo.projectName}/_apis/git/repositories/${repoInfo.repo.id}/refs`,
+        ctx.config.adoApiVersion ?? '7.1',
+        'filter=heads'
+      );
+
+      const refsResponse = await fetch(refsUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!refsResponse.ok) {
+        const errorText = await refsResponse.text();
+        console.error('[GET /api/v4/projects/:id/repository/refs] ADO error:', {
+          status: refsResponse.status,
+          error: errorText,
+        });
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: refsResponse.status,
+          },
+          refsResponse.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const refsData = (await refsResponse.json()) as ADOGitRefsResponse;
+      
+      // Filter by search if provided.
+      let filteredRefs = refsData.value || [];
+      if (search) {
+        const searchLower = search.toLowerCase();
+        filteredRefs = filteredRefs.filter((ref) =>
+          ref.name.toLowerCase().includes(searchLower)
+        );
+      }
+
+      // Map to GitLab refs format.
+      const refs = filteredRefs.map((ref) => {
+        const refName = ref.name.replace('refs/heads/', '');
+        return {
+          type: 'branch',
+          name: refName,
+        };
+      });
+
+      console.log('[GET /api/v4/projects/:id/repository/refs] Success:', {
+        projectId,
+        refCount: refs.length,
+        refNames: refs.slice(0, 5).map((r) => r.name),
+      });
+
+      return c.json(refs);
+    } catch (error) {
+      console.error('[GET /api/v4/projects/:id/repository/refs] Error:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
   // GET /api/v4/projects/:id/repository/branches/:branch - Get single branch.
   app.get('/api/v4/projects/:id/repository/branches/:branch', async (c) => {
     const { ctx } = c.var;
