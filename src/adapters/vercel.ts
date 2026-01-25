@@ -4,6 +4,7 @@
  */
 
 import { createApp } from '../core/app.js';
+import { getStorage } from '../core/storage/index.js';
 
 // Read configuration from environment variables.
 const config = {
@@ -13,6 +14,11 @@ const config = {
   oauthClientSecret: process.env.OAUTH_CLIENT_SECRET,
 };
 
+// Initialize storage.
+// For Vercel, set STORAGE_TYPE=vercel-kv and configure Vercel KV.
+// Note: Vercel KV adapter is not yet implemented.
+const storage = getStorage();
+
 // Create the app with configuration.
 const app = createApp(config);
 
@@ -21,3 +27,6 @@ export const runtime = 'edge';
 
 // Export the fetch handler.
 export default app;
+
+// Export storage for use in other modules.
+export { storage };

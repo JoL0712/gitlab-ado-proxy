@@ -37,3 +37,26 @@ output "api_endpoints" {
     list_mrs           = "${aws_lambda_function_url.proxy_url.function_url}api/v4/projects/:id/merge_requests"
   }
 }
+
+###############################################################################
+# DynamoDB Outputs
+###############################################################################
+
+output "dynamodb_table_name" {
+  description = "DynamoDB table name for key-value storage"
+  value       = var.enable_dynamodb_storage ? aws_dynamodb_table.storage[0].name : null
+}
+
+output "dynamodb_table_arn" {
+  description = "DynamoDB table ARN"
+  value       = var.enable_dynamodb_storage ? aws_dynamodb_table.storage[0].arn : null
+}
+
+output "storage_config" {
+  description = "Storage configuration for the proxy"
+  value = {
+    type       = var.enable_dynamodb_storage ? "dynamodb" : "memory"
+    table_name = var.enable_dynamodb_storage ? aws_dynamodb_table.storage[0].name : null
+    key_prefix = "gitlab-ado-proxy"
+  }
+}

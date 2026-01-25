@@ -6,6 +6,7 @@
 import 'dotenv/config';
 import { serve } from '@hono/node-server';
 import { createApp } from '../core/app.js';
+import { getStorage, getStorageConfigFromEnv } from '../core/storage/index.js';
 
 // Read configuration from environment variables.
 const config = {
@@ -17,6 +18,10 @@ const config = {
 
 const port = parseInt(process.env.PORT ?? '3000', 10);
 
+// Initialize storage.
+const storageConfig = getStorageConfigFromEnv();
+const storage = getStorage();
+
 // Create the app with configuration.
 const app = createApp(config);
 
@@ -27,6 +32,7 @@ console.log(`
 ║  Server:     http://localhost:${port.toString().padEnd(26)}║
 ║  ADO Base:   ${config.adoBaseUrl.substring(0, 42).padEnd(42)}║
 ║  API Ver:    ${config.adoApiVersion.padEnd(42)}║
+║  Storage:    ${storageConfig.type.padEnd(42)}║
 ╚═══════════════════════════════════════════════════════════╝
 `);
 
@@ -34,3 +40,6 @@ serve({
   fetch: app.fetch,
   port,
 });
+
+// Export storage for use in other modules.
+export { storage };

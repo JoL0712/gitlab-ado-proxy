@@ -79,14 +79,20 @@ src/
 │   ├── app.ts           # Hono application and routes
 │   ├── mapping.ts       # GitLab <-> ADO mapping service
 │   ├── types.ts         # TypeScript interfaces
-│   └── index.ts         # Core exports
+│   ├── index.ts         # Core exports
+│   └── storage/         # Key-value storage abstraction
+│       ├── types.ts     # Storage interface and types
+│       ├── memory.ts    # In-memory adapter (local dev)
+│       ├── dynamodb.ts  # DynamoDB adapter (AWS Lambda)
+│       ├── factory.ts   # Storage factory
+│       └── index.ts     # Storage exports
 ├── adapters/            # Runtime-specific entry points
 │   ├── aws-lambda.ts    # AWS Lambda handler
 │   ├── nodejs.ts        # Node.js server
 │   └── vercel.ts        # Vercel Edge handler
 infra/
 └── terraform/           # AWS deployment configuration
-    ├── main.tf          # Main Terraform configuration
+    ├── main.tf          # Main Terraform configuration (Lambda + DynamoDB)
     ├── variables.tf     # Input variables
     ├── outputs.tf       # Output values
     └── terraform.tfvars.example  # Example configuration
@@ -255,6 +261,8 @@ curl -H "PRIVATE-TOKEN: your-ado-pat" \
 
 ## Environment Variables
 
+### Core Configuration
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ADO_BASE_URL` | Azure DevOps organization URL (project-agnostic) | Required |
@@ -262,6 +270,63 @@ curl -H "PRIVATE-TOKEN: your-ado-pat" \
 | `OAUTH_CLIENT_ID` | OAuth client ID for validating OAuth requests (optional, recommended for security) | None (accepts any) |
 | `OAUTH_CLIENT_SECRET` | OAuth client secret for validating token exchange (optional, recommended for security) | None (accepts any) |
 | `PORT` | Local server port (Node.js only) | `3000` |
+
+### Storage Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `STORAGE_TYPE` | Storage adapter type: `memory`, `dynamodb` | `memory` |
+| `STORAGE_TABLE_NAME` | DynamoDB table name (required for `dynamodb` type) | - |
+| `STORAGE_KEY_PREFIX` | Key prefix for namespacing | `gitlab-ado-proxy` |
+| `AWS_REGION` | AWS region for DynamoDB | `us-east-1` |
+
+## Storage
+
+The proxy uses a pluggable key-value storage system for OAuth tokens and sessions. This is essential for serverless environments where in-memory storage doesn't persist between invocations.
+
+### Storage Adapters
+
+| Adapter | Use Case | Configuration |
+|---------|----------|---------------|
+| `memory` | Local development, testing | Default, no config needed |
+| `dynamodb` | AWS Lambda, production | Set `STORAGE_TYPE=dynamodb` and `STORAGE_TABLE_NAME` |
+
+### Local Development
+
+For local development, the default `memory` storage is sufficient:
+
+```bash
+# Uses in-memory storage by default
+npm run dev
+```
+
+### AWS Lambda (DynamoDB)
+
+The Terraform configuration automatically creates a DynamoDB table when `enable_dynamodb_storage = true` (default):
+
+```hcl
+# In terraform.tfvars
+enable_dynamodb_storage = true
+dynamodb_billing_mode   = "PAY_PER_REQUEST"  # Serverless pricing
+```
+
+The Lambda function will automatically use the DynamoDB table for persistent storage.
+
+### Storage Interface
+
+The storage system provides a simple key-value interface:
+
+```typescript
+interface KVStorage {
+  get<T>(key: string): Promise<T | null>;
+  set<T>(key: string, value: T, options?: { ttl?: number }): Promise<void>;
+  delete(key: string): Promise<boolean>;
+  exists(key: string): Promise<boolean>;
+  list<T>(options?: { prefix?: string; limit?: number }): Promise<ListResult<T>>;
+}
+```
+
+All storage operations support automatic TTL (time-to-live) for expiring OAuth tokens and sessions.
 
 ## API Mapping Details
 
@@ -304,6 +369,11 @@ npm run typecheck
 - **`src/core/types.ts`**: TypeScript interfaces for both GitLab and ADO APIs.
 - **`src/core/mapping.ts`**: Pure functions for converting between API formats.
 - **`src/core/app.ts`**: Hono application with route handlers.
+- **`src/core/storage/`**: Cloud-agnostic key-value storage abstraction.
+  - `types.ts`: Storage interface definition.
+  - `memory.ts`: In-memory adapter for local development.
+  - `dynamodb.ts`: DynamoDB adapter for AWS Lambda.
+  - `factory.ts`: Creates storage instances based on configuration.
 - **`src/adapters/`**: Runtime-specific adapters.
 
 ## License

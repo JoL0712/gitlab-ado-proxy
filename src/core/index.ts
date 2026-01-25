@@ -6,3 +6,6 @@
 export { createApp, app } from './app.js';
 export { MappingService } from './mapping.js';
 export * from './types.js';
+
+// Storage module.
+export * from './storage/index.js';

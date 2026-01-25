@@ -138,3 +138,42 @@ variable "alarm_sns_topic_arn" {
   type        = string
   default     = ""
 }
+
+###############################################################################
+# DynamoDB Storage Configuration
+###############################################################################
+
+variable "enable_dynamodb_storage" {
+  description = "Enable DynamoDB for persistent key-value storage (required for OAuth in serverless)"
+  type        = bool
+  default     = true
+}
+
+variable "dynamodb_billing_mode" {
+  description = "DynamoDB billing mode (PAY_PER_REQUEST or PROVISIONED)"
+  type        = string
+  default     = "PAY_PER_REQUEST"
+
+  validation {
+    condition     = contains(["PAY_PER_REQUEST", "PROVISIONED"], var.dynamodb_billing_mode)
+    error_message = "Billing mode must be PAY_PER_REQUEST or PROVISIONED"
+  }
+}
+
+variable "dynamodb_read_capacity" {
+  description = "DynamoDB read capacity units (only used when billing_mode = PROVISIONED)"
+  type        = number
+  default     = 5
+}
+
+variable "dynamodb_write_capacity" {
+  description = "DynamoDB write capacity units (only used when billing_mode = PROVISIONED)"
+  type        = number
+  default     = 5
+}
+
+variable "dynamodb_enable_pitr" {
+  description = "Enable Point-in-Time Recovery for DynamoDB table"
+  type        = bool
+  default     = false
+}

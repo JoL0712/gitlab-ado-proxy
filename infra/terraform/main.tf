@@ -137,6 +137,70 @@ resource "aws_cloudwatch_log_group" "lambda_logs" {
 }
 
 ###############################################################################
+# DynamoDB Table for Key-Value Storage
+###############################################################################
+
+resource "aws_dynamodb_table" "storage" {
+  count = var.enable_dynamodb_storage ? 1 : 0
+
+  name         = "${local.function_name}-storage"
+  billing_mode = var.dynamodb_billing_mode
+  hash_key     = "pk"
+
+  # Provisioned capacity (only used when billing_mode = "PROVISIONED").
+  read_capacity  = var.dynamodb_billing_mode == "PROVISIONED" ? var.dynamodb_read_capacity : null
+  write_capacity = var.dynamodb_billing_mode == "PROVISIONED" ? var.dynamodb_write_capacity : null
+
+  attribute {
+    name = "pk"
+    type = "S"
+  }
+
+  # TTL for automatic expiration of OAuth tokens and sessions.
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  # Point-in-time recovery for data protection.
+  point_in_time_recovery {
+    enabled = var.dynamodb_enable_pitr
+  }
+
+  tags = {
+    Name = "${local.function_name}-storage"
+  }
+}
+
+# IAM policy for Lambda to access DynamoDB.
+resource "aws_iam_role_policy" "lambda_dynamodb" {
+  count = var.enable_dynamodb_storage ? 1 : 0
+
+  name = "${local.function_name}-dynamodb"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:BatchWriteItem"
+        ]
+        Resource = [
+          aws_dynamodb_table.storage[0].arn
+        ]
+      }
+    ]
+  })
+}
+
+###############################################################################
 # Lambda Function
 ###############################################################################
 
@@ -162,7 +226,15 @@ resource "aws_lambda_function" "proxy" {
         NODE_ENV        = var.environment
       },
       var.oauth_client_id != "" ? { OAUTH_CLIENT_ID = var.oauth_client_id } : {},
-      var.oauth_client_secret != "" ? { OAUTH_CLIENT_SECRET = var.oauth_client_secret } : {}
+      var.oauth_client_secret != "" ? { OAUTH_CLIENT_SECRET = var.oauth_client_secret } : {},
+      # Storage configuration.
+      var.enable_dynamodb_storage ? {
+        STORAGE_TYPE       = "dynamodb"
+        STORAGE_TABLE_NAME = aws_dynamodb_table.storage[0].name
+        STORAGE_KEY_PREFIX = "gitlab-ado-proxy"
+      } : {
+        STORAGE_TYPE = "memory"
+      }
     )
   }
 
