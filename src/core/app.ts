@@ -1709,9 +1709,10 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       const defaultBranch = repo.defaultBranch ?? 'refs/heads/main';
 
       // Get branches (refs with heads filter) using project-level URL.
+      // Use repo.id (GUID) instead of projectId (might be a path like "project/repo").
       const refsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/refs?filter=heads`,
+        `/_apis/git/repositories/${repo.id}/refs?filter=heads`,
         ctx.config.adoApiVersion ?? '7.1',
         projectName
       );
@@ -1899,7 +1900,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Get specific branch ref using project-level URL.
       const refUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/refs?filter=heads/${branchName}`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/refs?filter=heads/${branchName}`,
         ctx.config.adoApiVersion ?? '7.1',
         projectName
       );
@@ -1994,7 +1995,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Get the source ref's commit SHA.
       const sourceRefUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/refs?filter=heads/${body.ref}`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/refs?filter=heads/${body.ref}`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -2036,7 +2037,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Create the new branch using refs API.
       const refsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/refs`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/refs`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -2139,7 +2140,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Get the branch's current commit SHA.
       const refUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/refs?filter=heads/${branchName}`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/refs?filter=heads/${branchName}`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -2181,7 +2182,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Delete the branch using refs API.
       const refsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/refs`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/refs`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -2275,7 +2276,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/pullrequests`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -2355,7 +2356,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         );
       }
 
-      let prPath = `/_apis/git/repositories/${projectId}/pullrequests`;
+      let prPath = `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests`;
       if (adoStatus) {
         prPath += `?searchCriteria.status=${adoStatus}`;
       }
@@ -2435,7 +2436,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/pullrequests/${mrIid}`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests/${mrIid}`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -2526,7 +2527,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/pullrequests/${mrIid}`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests/${mrIid}`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -2605,7 +2606,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Complete the PR (merge).
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/pullrequests/${mrIid}`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests/${mrIid}`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -2720,7 +2721,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Get PR details first.
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/pullrequests/${mrIid}`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests/${mrIid}`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -2750,7 +2751,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Get the iterations to find the diff.
       const iterationsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/pullrequests/${mrIid}/iterations`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests/${mrIid}/iterations`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -2785,7 +2786,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
           // Get changes for the last iteration.
           const changesUrl = MappingService.buildAdoUrl(
             ctx.config.adoBaseUrl,
-            `/_apis/git/repositories/${projectId}/pullrequests/${mrIid}/iterations/${lastIteration.id}/changes`,
+            `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests/${mrIid}/iterations/${lastIteration.id}/changes`,
             ctx.config.adoApiVersion ?? '7.1',
             repoInfo.projectName
           );
@@ -2875,7 +2876,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       }
 
       // Build tree URL with path and version.
-      let treePath = `/_apis/git/repositories/${projectId}/items`;
+      let treePath = `/_apis/git/repositories/${repoInfo.repo.id}/items`;
       const queryParams: string[] = [];
       queryParams.push(`scopePath=${encodeURIComponent(path || '/')}`);
       queryParams.push(`recursionLevel=${recursive ? 'Full' : 'OneLevel'}`);
@@ -2964,7 +2965,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Get blob content.
       const blobUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/blobs/${sha}`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/blobs/${sha}`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -3044,7 +3045,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
       // Check if file exists.
       const encodedPath = encodeURIComponent(`/${filePath}`);
-      let itemPath = `/_apis/git/repositories/${projectId}/items`;
+      let itemPath = `/_apis/git/repositories/${repoInfo.repo.id}/items`;
       itemPath += `?path=${encodedPath}`;
       itemPath += `&versionDescriptor.version=${encodeURIComponent(ref)}`;
       itemPath += '&versionDescriptor.versionType=branch';
@@ -3107,7 +3108,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
       // Build file URL for raw content.
       const encodedPath = encodeURIComponent(`/${filePath}`);
-      let itemPath = `/_apis/git/repositories/${projectId}/items`;
+      let itemPath = `/_apis/git/repositories/${repoInfo.repo.id}/items`;
       itemPath += `?path=${encodedPath}`;
       itemPath += `&versionDescriptor.version=${encodeURIComponent(ref)}`;
       itemPath += '&versionDescriptor.versionType=branch';
@@ -3195,7 +3196,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
       // Build file URL.
       const encodedPath = encodeURIComponent(`/${filePath}`);
-      let itemPath = `/_apis/git/repositories/${projectId}/items`;
+      let itemPath = `/_apis/git/repositories/${repoInfo.repo.id}/items`;
       itemPath += `?path=${encodedPath}`;
       itemPath += `&versionDescriptor.version=${encodeURIComponent(ref)}`;
       itemPath += '&versionDescriptor.versionType=branch';
@@ -3260,7 +3261,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       }
 
       // Get commit info for the file.
-      const commitsPath = `/_apis/git/repositories/${projectId}/commits?searchCriteria.itemPath=${encodedPath}&searchCriteria.$top=1`;
+      const commitsPath = `/_apis/git/repositories/${repoInfo.repo.id}/commits?searchCriteria.itemPath=${encodedPath}&searchCriteria.$top=1`;
       const commitsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         commitsPath,
@@ -3347,7 +3348,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         queryParams.push(`searchCriteria.itemPath=${encodeURIComponent(path)}`);
       }
 
-      const commitsPath = `/_apis/git/repositories/${projectId}/commits?${queryParams.join('&')}`;
+      const commitsPath = `/_apis/git/repositories/${repoInfo.repo.id}/commits?${queryParams.join('&')}`;
       const commitsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         commitsPath,
@@ -3424,7 +3425,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Get single commit.
       const commitUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/commits/${sha}`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/commits/${sha}`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -3518,7 +3519,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Get commits between the two refs.
       const commitsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/commitsbatch`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/commitsbatch`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -3544,7 +3545,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Get diff between the two refs.
       const diffUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/diffs/commits?baseVersion=${encodeURIComponent(from)}&baseVersionType=branch&targetVersion=${encodeURIComponent(to)}&targetVersionType=branch`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/diffs/commits?baseVersion=${encodeURIComponent(from)}&baseVersionType=branch&targetVersion=${encodeURIComponent(to)}&targetVersionType=branch`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -3652,7 +3653,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Get the current commit SHA for the branch.
       const refUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/refs?filter=heads/${commitCreate.branch}`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/refs?filter=heads/${commitCreate.branch}`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
@@ -3697,7 +3698,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       // Create the push (commit).
       const pushUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}/pushes`,
+        `/_apis/git/repositories/${repoInfo.repo.id}/pushes`,
         ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
