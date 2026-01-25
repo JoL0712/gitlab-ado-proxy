@@ -3921,7 +3921,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
   // GET /:namespace/:project/info/refs - Git discovery endpoint.
   app.get('/:namespace/:project/info/refs', async (c) => {
-    const { ctx } = c.var;
+    const ctx = c.var.ctx;
     const namespace = c.req.param('namespace');
     const project = c.req.param('project');
     const service = c.req.query('service');
@@ -3930,8 +3930,16 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       namespace,
       project,
       service,
-      hasAuth: !!ctx.adoAuthHeader,
+      hasAuth: !!ctx?.adoAuthHeader,
     });
+
+    // Check for authentication.
+    if (!ctx?.adoAuthHeader) {
+      // Return 401 to prompt git client for credentials.
+      return c.text('Authentication required', 401, {
+        'WWW-Authenticate': 'Basic realm="Git"',
+      });
+    }
 
     if (!service || !['git-upload-pack', 'git-receive-pack'].includes(service)) {
       return c.text('Invalid service', 400);
@@ -3989,15 +3997,22 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
   // POST /:namespace/:project/git-upload-pack - Git fetch/clone data.
   app.post('/:namespace/:project/git-upload-pack', async (c) => {
-    const { ctx } = c.var;
+    const ctx = c.var.ctx;
     const namespace = c.req.param('namespace');
     const project = c.req.param('project');
 
     console.log('[Git Smart HTTP] git-upload-pack request:', {
       namespace,
       project,
-      hasAuth: !!ctx.adoAuthHeader,
+      hasAuth: !!ctx?.adoAuthHeader,
     });
+
+    // Check for authentication.
+    if (!ctx?.adoAuthHeader) {
+      return c.text('Authentication required', 401, {
+        'WWW-Authenticate': 'Basic realm="Git"',
+      });
+    }
 
     try {
       const repoPath = `${namespace}/${project}`;
@@ -4047,15 +4062,22 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
   // POST /:namespace/:project/git-receive-pack - Git push data.
   app.post('/:namespace/:project/git-receive-pack', async (c) => {
-    const { ctx } = c.var;
+    const ctx = c.var.ctx;
     const namespace = c.req.param('namespace');
     const project = c.req.param('project');
 
     console.log('[Git Smart HTTP] git-receive-pack request:', {
       namespace,
       project,
-      hasAuth: !!ctx.adoAuthHeader,
+      hasAuth: !!ctx?.adoAuthHeader,
     });
+
+    // Check for authentication.
+    if (!ctx?.adoAuthHeader) {
+      return c.text('Authentication required', 401, {
+        'WWW-Authenticate': 'Basic realm="Git"',
+      });
+    }
 
     try {
       const repoPath = `${namespace}/${project}`;
