@@ -103,7 +103,7 @@ export interface KVStorage {
  */
 export interface StorageConfig {
   // Storage adapter type.
-  type: 'memory' | 'dynamodb' | 'redis' | 'vercel-kv';
+  type: 'memory' | 'dynamodb' | 'redis';
   // Table/bucket name for cloud storage.
   tableName?: string;
   // AWS region for DynamoDB.

@@ -5,9 +5,9 @@ A cloud-agnostic middleware that emulates GitLab's REST API and proxies requests
 ## Features
 
 - **GitLab API Emulation**: Implements GitLab REST API endpoints that proxy to equivalent Azure DevOps APIs.
-- **Multi-Runtime Support**: Deploy to AWS Lambda, Vercel Edge, or run locally with Node.js.
+- **Multi-Runtime Support**: Deploy to AWS Lambda or run locally with Node.js.
 - **Cloud-Agnostic Core**: The core logic is platform-agnostic, using only standard Web APIs.
-- **Production-Ready**: Includes Terraform configuration for AWS Lambda deployment.
+- **Production-Ready**: Includes Terraform configuration for AWS Lambda deployment with DynamoDB storage.
 
 ## Supported Endpoints
 
@@ -88,8 +88,7 @@ src/
 │       └── index.ts     # Storage exports
 ├── adapters/            # Runtime-specific entry points
 │   ├── aws-lambda.ts    # AWS Lambda handler
-│   ├── nodejs.ts        # Node.js server
-│   └── vercel.ts        # Vercel Edge handler
+│   └── nodejs.ts        # Node.js server (local development)
 infra/
 └── terraform/           # AWS deployment configuration
     ├── main.tf          # Main Terraform configuration (Lambda + DynamoDB)

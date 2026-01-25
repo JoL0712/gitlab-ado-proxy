@@ -31,9 +31,6 @@ export function createStorage(config: StorageConfig): KVStorage {
     case 'redis':
       throw new Error('Redis storage adapter not yet implemented');
 
-    case 'vercel-kv':
-      throw new Error('Vercel KV storage adapter not yet implemented');
-
     default:
       throw new Error(`Unknown storage type: ${config.type}`);
   }
