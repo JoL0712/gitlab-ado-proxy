@@ -98,6 +98,48 @@ export interface GitLabUser {
   can_create_project: boolean;
 }
 
+// GitLab Project Access Token.
+export interface GitLabProjectAccessToken {
+  id: number;
+  name: string;
+  revoked: boolean;
+  created_at: string;
+  scopes: string[];
+  user_id: number;
+  last_used_at: string | null;
+  active: boolean;
+  expires_at: string | null;
+  // Only included when creating a new token.
+  token?: string;
+  access_level?: number;
+}
+
+// GitLab Project Access Token Create Payload.
+export interface GitLabProjectAccessTokenCreate {
+  name: string;
+  scopes: string[];
+  access_level?: number;
+  expires_at?: string;
+}
+
+// Stored access token (internal representation).
+export interface StoredAccessToken {
+  id: number;
+  projectId: string;
+  name: string;
+  scopes: string[];
+  accessLevel: number;
+  // The actual ADO PAT that this token maps to.
+  adoPat: string;
+  createdAt: string;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  revoked: boolean;
+  // User info from when the token was created.
+  userId: number;
+  userName: string;
+}
+
 // GitLab Tree Item (file/directory in repository).
 export interface GitLabTreeItem {
   id: string;

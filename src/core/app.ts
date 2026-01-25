@@ -2,11 +2,15 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { MappingService } from './mapping.js';
+import { getStorage } from './storage/index.js';
 import type {
   ProxyConfig,
   RequestContext,
   GitLabMergeRequestCreate,
   GitLabCommitCreate,
+  GitLabProjectAccessToken,
+  GitLabProjectAccessTokenCreate,
+  StoredAccessToken,
   ADORepository,
   ADOGitRefsResponse,
   ADOPullRequest,
@@ -107,7 +111,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     // Support both PRIVATE-TOKEN header (GitLab style) and Bearer token (OAuth style).
     const privateToken = c.req.header('PRIVATE-TOKEN');
     const authHeader = c.req.header('Authorization');
-    const gitlabToken = privateToken || authHeader?.replace(/^Bearer\s+/i, '');
+    let gitlabToken = privateToken || authHeader?.replace(/^Bearer\s+/i, '');
 
     // Validate token exists and is not "undefined" or empty.
     if (!gitlabToken || gitlabToken === 'undefined' || gitlabToken.trim() === '') {
@@ -130,8 +134,100 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       );
     }
 
-    // Convert GitLab token to ADO auth header.
-    const adoAuthHeader = MappingService.convertAuth(gitlabToken);
+    let adoAuthHeader: string;
+    let tokenSource = privateToken ? 'PRIVATE-TOKEN' : 'Authorization';
+
+    // Check if this is one of our generated project access tokens (glpat-*).
+    if (gitlabToken.startsWith('glpat-')) {
+      console.log('[Auth] Detected project access token, looking up ADO PAT...');
+      
+      try {
+        const storage = getStorage();
+        const tokenLookup = await storage.get<{ projectId: string; tokenId: number }>(`token_lookup:${gitlabToken}`);
+        
+        if (!tokenLookup) {
+          console.warn('[Auth] Project access token not found in storage:', {
+            tokenPrefix: gitlabToken.substring(0, 15) + '...',
+          });
+          return c.json(
+            {
+              error: 'Unauthorized',
+              message: 'Invalid or expired project access token',
+              statusCode: 401,
+            },
+            401
+          );
+        }
+
+        // Look up the full token data.
+        const tokenData = await storage.get<StoredAccessToken>(
+          `access_token:${tokenLookup.projectId}:${tokenLookup.tokenId}`
+        );
+
+        if (!tokenData || tokenData.revoked) {
+          console.warn('[Auth] Project access token revoked or not found:', {
+            projectId: tokenLookup.projectId,
+            tokenId: tokenLookup.tokenId,
+            revoked: tokenData?.revoked,
+          });
+          return c.json(
+            {
+              error: 'Unauthorized',
+              message: 'Project access token has been revoked',
+              statusCode: 401,
+            },
+            401
+          );
+        }
+
+        // Check expiration.
+        if (tokenData.expiresAt && new Date(tokenData.expiresAt) < new Date()) {
+          console.warn('[Auth] Project access token expired:', {
+            projectId: tokenLookup.projectId,
+            tokenId: tokenLookup.tokenId,
+            expiresAt: tokenData.expiresAt,
+          });
+          return c.json(
+            {
+              error: 'Unauthorized',
+              message: 'Project access token has expired',
+              statusCode: 401,
+            },
+            401
+          );
+        }
+
+        // Update last used timestamp.
+        tokenData.lastUsedAt = new Date().toISOString();
+        await storage.set(
+          `access_token:${tokenLookup.projectId}:${tokenLookup.tokenId}`,
+          tokenData
+        );
+
+        // Use the stored ADO PAT.
+        adoAuthHeader = MappingService.convertAuth(tokenData.adoPat);
+        tokenSource = 'ProjectAccessToken';
+
+        console.log('[Auth] Project access token resolved:', {
+          projectId: tokenLookup.projectId,
+          tokenId: tokenLookup.tokenId,
+          tokenName: tokenData.name,
+        });
+      } catch (error) {
+        console.error('[Auth] Error looking up project access token:', error);
+        return c.json(
+          {
+            error: 'Internal Server Error',
+            message: 'Failed to validate project access token',
+            statusCode: 500,
+          },
+          500
+        );
+      }
+    } else {
+      // Regular ADO PAT - convert directly.
+      adoAuthHeader = MappingService.convertAuth(gitlabToken);
+    }
 
     // Set context for downstream handlers.
     c.set('ctx', {
@@ -145,7 +241,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       hasToken: !!gitlabToken,
       tokenLength: gitlabToken.length,
       tokenPrefix: gitlabToken.substring(0, 8) + '...',
-      tokenSource: privateToken ? 'PRIVATE-TOKEN' : 'Authorization',
+      tokenSource,
     });
 
     return next();
@@ -751,7 +847,6 @@ export function createApp(config: ProxyConfig): Hono<Env> {
   });
 
   // GET /api/v4/projects/:id/access_tokens - List project access tokens.
-  // Note: Azure DevOps doesn't have project-level access tokens, so we return an empty array.
   app.get('/api/v4/projects/:id/access_tokens', async (c) => {
     const projectId = c.req.param('id');
 
@@ -759,25 +854,223 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       projectId,
     });
 
-    // Azure DevOps uses organization-level Personal Access Tokens, not project-level tokens.
-    // Return an empty array to indicate no project-specific tokens exist.
-    return c.json([]);
+    try {
+      const storage = getStorage();
+      const result = await storage.list<StoredAccessToken>({
+        prefix: `access_token:${projectId}:`,
+      });
+
+      // Map stored tokens to GitLab format (without exposing the actual token).
+      const tokens: GitLabProjectAccessToken[] = result.items
+        .filter((item) => !item.item.value.revoked)
+        .map((item) => ({
+          id: item.item.value.id,
+          name: item.item.value.name,
+          revoked: item.item.value.revoked,
+          created_at: item.item.value.createdAt,
+          scopes: item.item.value.scopes,
+          user_id: item.item.value.userId,
+          last_used_at: item.item.value.lastUsedAt,
+          active: !item.item.value.revoked && (
+            !item.item.value.expiresAt || new Date(item.item.value.expiresAt) > new Date()
+          ),
+          expires_at: item.item.value.expiresAt,
+          access_level: item.item.value.accessLevel,
+        }));
+
+      console.log('[GET /api/v4/projects/:id/access_tokens] Found tokens:', {
+        projectId,
+        count: tokens.length,
+        tokenIds: tokens.map((t) => t.id),
+      });
+
+      return c.json(tokens);
+    } catch (error) {
+      console.error('[GET /api/v4/projects/:id/access_tokens] Error:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
   });
 
   // POST /api/v4/projects/:id/access_tokens - Create project access token.
-  // Note: Azure DevOps doesn't support project-level access tokens.
-  // Return 200 with empty response to satisfy Cursor Cloud's expectations.
   app.post('/api/v4/projects/:id/access_tokens', async (c) => {
+    const { ctx } = c.var;
     const projectId = c.req.param('id');
 
-    console.log('[POST /api/v4/projects/:id/access_tokens] Request:', {
+    try {
+      const body = await c.req.json() as GitLabProjectAccessTokenCreate;
+
+      console.log('[POST /api/v4/projects/:id/access_tokens] Request:', {
+        projectId,
+        name: body.name,
+        scopes: body.scopes,
+        accessLevel: body.access_level,
+        expiresAt: body.expires_at,
+      });
+
+      // Validate required fields.
+      if (!body.name || !body.scopes || body.scopes.length === 0) {
+        return c.json(
+          {
+            error: 'Bad Request',
+            message: 'name and scopes are required',
+            statusCode: 400,
+          },
+          400
+        );
+      }
+
+      // Extract the original ADO PAT from the auth header.
+      // The ctx.adoAuthHeader is "Basic base64(:PAT)", we need to extract the PAT.
+      const authMatch = ctx.adoAuthHeader.match(/^Basic\s+(.+)$/i);
+      if (!authMatch) {
+        return c.json(
+          {
+            error: 'Unauthorized',
+            message: 'Invalid authorization format',
+            statusCode: 401,
+          },
+          401
+        );
+      }
+
+      const decoded = atob(authMatch[1]);
+      const adoPat = decoded.startsWith(':') ? decoded.slice(1) : decoded;
+
+      // Generate a unique token ID and the token value itself.
+      const tokenId = Date.now();
+      const tokenValue = `glpat-${Buffer.from(`${tokenId}-${Math.random().toString(36).substring(2)}`).toString('base64url')}`;
+
+      // Calculate expiration.
+      let expiresAt: string | null = null;
+      let ttlSeconds: number | undefined;
+      if (body.expires_at) {
+        expiresAt = body.expires_at;
+        const expiresDate = new Date(body.expires_at);
+        ttlSeconds = Math.max(0, Math.floor((expiresDate.getTime() - Date.now()) / 1000));
+      }
+
+      // Create the stored token.
+      const storedToken: StoredAccessToken = {
+        id: tokenId,
+        projectId,
+        name: body.name,
+        scopes: body.scopes,
+        accessLevel: body.access_level ?? 30,
+        adoPat,
+        createdAt: new Date().toISOString(),
+        expiresAt,
+        lastUsedAt: null,
+        revoked: false,
+        userId: 1,
+        userName: 'user',
+      };
+
+      // Store the token by its generated value (so we can look it up when used).
+      const storage = getStorage();
+      await storage.set(
+        `access_token:${projectId}:${tokenId}`,
+        storedToken,
+        ttlSeconds ? { ttl: ttlSeconds } : undefined
+      );
+
+      // Also store a mapping from token value to token ID for quick lookup.
+      await storage.set(
+        `token_lookup:${tokenValue}`,
+        { projectId, tokenId },
+        ttlSeconds ? { ttl: ttlSeconds } : undefined
+      );
+
+      // Return the created token (including the actual token value).
+      const response: GitLabProjectAccessToken = {
+        id: tokenId,
+        name: body.name,
+        revoked: false,
+        created_at: storedToken.createdAt,
+        scopes: body.scopes,
+        user_id: storedToken.userId,
+        last_used_at: null,
+        active: true,
+        expires_at: expiresAt,
+        token: tokenValue,
+        access_level: storedToken.accessLevel,
+      };
+
+      console.log('[POST /api/v4/projects/:id/access_tokens] Created token:', {
+        projectId,
+        tokenId,
+        name: body.name,
+        tokenPrefix: tokenValue.substring(0, 15) + '...',
+        expiresAt,
+      });
+
+      return c.json(response, 201);
+    } catch (error) {
+      console.error('[POST /api/v4/projects/:id/access_tokens] Error:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
+  // DELETE /api/v4/projects/:id/access_tokens/:token_id - Revoke project access token.
+  app.delete('/api/v4/projects/:id/access_tokens/:token_id', async (c) => {
+    const projectId = c.req.param('id');
+    const tokenId = c.req.param('token_id');
+
+    console.log('[DELETE /api/v4/projects/:id/access_tokens/:token_id] Request:', {
       projectId,
+      tokenId,
     });
 
-    // Azure DevOps uses organization-level Personal Access Tokens, not project-level tokens.
-    // Return 200 with empty array to indicate no tokens can be created,
-    // but don't block Cursor Cloud from proceeding with other operations.
-    return c.json([]);
+    try {
+      const storage = getStorage();
+      const storageKey = `access_token:${projectId}:${tokenId}`;
+      const tokenData = await storage.get<StoredAccessToken>(storageKey);
+
+      if (!tokenData) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Access token ${tokenId} not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Mark as revoked instead of deleting.
+      tokenData.revoked = true;
+      await storage.set(storageKey, tokenData);
+
+      console.log('[DELETE /api/v4/projects/:id/access_tokens/:token_id] Revoked token:', {
+        projectId,
+        tokenId,
+      });
+
+      return c.body(null, 204);
+    } catch (error) {
+      console.error('[DELETE /api/v4/projects/:id/access_tokens/:token_id] Error:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
   });
 
   // GET /api/v4/projects/:id - Get project (repository) details.
