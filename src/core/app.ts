@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, Context } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { MappingService } from './mapping.js';
@@ -3935,22 +3935,94 @@ export function createApp(config: ProxyConfig): Hono<Env> {
   // Git Smart HTTP Protocol Endpoints (for git clone/fetch/push)
   // ==========================================================================
 
+  // Helper function to extract auth from Git HTTP requests.
+  // These routes don't use the /api/v4/* middleware, so we handle auth inline.
+  async function extractGitAuth(c: Context): Promise<{ adoAuthHeader: string } | null> {
+    const authHeader = c.req.header('Authorization');
+
+    if (!authHeader) {
+      return null;
+    }
+
+    let token: string | null = null;
+
+    if (authHeader.toLowerCase().startsWith('basic ')) {
+      try {
+        const base64Credentials = authHeader.substring(6).trim();
+        const decoded = Buffer.from(base64Credentials, 'base64').toString('utf-8');
+        const colonIndex = decoded.indexOf(':');
+
+        if (colonIndex !== -1) {
+          // Use password as the token (format: username:password).
+          token = decoded.substring(colonIndex + 1);
+        } else {
+          token = decoded;
+        }
+
+        console.log('[Git Auth] Extracted from Basic auth:', {
+          tokenPrefix: token ? token.substring(0, 10) + '...' : 'none',
+          tokenLength: token?.length ?? 0,
+        });
+      } catch (e) {
+        console.warn('[Git Auth] Failed to decode Basic auth:', e);
+        return null;
+      }
+    } else if (authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7);
+    }
+
+    if (!token || token.trim() === '') {
+      return null;
+    }
+
+    // Check if this is a glpat token that needs lookup.
+    if (token.startsWith('glpat-')) {
+      try {
+        const storage = getStorage();
+        const tokenLookup = await storage.get<{ projectId: string; tokenId: number }>(`token_lookup:${token}`);
+
+        if (!tokenLookup) {
+          console.warn('[Git Auth] Project access token not found');
+          return null;
+        }
+
+        const tokenData = await storage.get<StoredAccessToken>(
+          `access_token:${tokenLookup.projectId}:${tokenLookup.tokenId}`
+        );
+
+        if (!tokenData || tokenData.revoked) {
+          return null;
+        }
+
+        return { adoAuthHeader: MappingService.convertAuth(tokenData.adoPat) };
+      } catch (error) {
+        console.error('[Git Auth] Error looking up token:', error);
+        return null;
+      }
+    }
+
+    // Regular token - use as ADO PAT.
+    return { adoAuthHeader: MappingService.convertAuth(token) };
+  }
+
   // GET /:namespace/:project/info/refs - Git discovery endpoint.
   app.get('/:namespace/:project/info/refs', async (c) => {
-    const ctx = c.var.ctx;
     const namespace = c.req.param('namespace');
     const project = c.req.param('project');
     const service = c.req.query('service');
+
+    // Extract auth for Git HTTP (not handled by /api/v4/* middleware).
+    const gitAuth = await extractGitAuth(c);
 
     console.log('[Git Smart HTTP] info/refs request:', {
       namespace,
       project,
       service,
-      hasAuth: !!ctx?.adoAuthHeader,
+      hasAuth: !!gitAuth,
     });
 
     // Check for authentication.
-    if (!ctx?.adoAuthHeader) {
+    if (!gitAuth) {
       // Return 401 to prompt git client for credentials.
       return c.text('Authentication required', 401, {
         'WWW-Authenticate': 'Basic realm="Git"',
@@ -3966,10 +4038,10 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       const repoPath = `${namespace}/${project}`;
       const repoInfo = await fetchRepositoryInfo(
         repoPath,
-        ctx.adoAuthHeader,
-        ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
-        ctx.config.allowedProjects
+        gitAuth.adoAuthHeader,
+        config.adoBaseUrl,
+        config.adoApiVersion ?? '7.1',
+        config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -3979,14 +4051,14 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
       // Build ADO Git URL.
       // ADO Git HTTP format: https://dev.azure.com/{org}/{project}/_git/{repo}/info/refs?service=...
-      const adoGitUrl = `${ctx.config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/info/refs?service=${service}`;
+      const adoGitUrl = `${config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/info/refs?service=${service}`;
 
       console.log('[Git Smart HTTP] Proxying to ADO:', { adoGitUrl });
 
       const response = await fetch(adoGitUrl, {
         method: 'GET',
         headers: {
-          Authorization: ctx.adoAuthHeader,
+          Authorization: gitAuth.adoAuthHeader,
         },
       });
 
@@ -4013,18 +4085,20 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
   // POST /:namespace/:project/git-upload-pack - Git fetch/clone data.
   app.post('/:namespace/:project/git-upload-pack', async (c) => {
-    const ctx = c.var.ctx;
     const namespace = c.req.param('namespace');
     const project = c.req.param('project');
+
+    // Extract auth for Git HTTP.
+    const gitAuth = await extractGitAuth(c);
 
     console.log('[Git Smart HTTP] git-upload-pack request:', {
       namespace,
       project,
-      hasAuth: !!ctx?.adoAuthHeader,
+      hasAuth: !!gitAuth,
     });
 
     // Check for authentication.
-    if (!ctx?.adoAuthHeader) {
+    if (!gitAuth) {
       return c.text('Authentication required', 401, {
         'WWW-Authenticate': 'Basic realm="Git"',
       });
@@ -4034,23 +4108,23 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       const repoPath = `${namespace}/${project}`;
       const repoInfo = await fetchRepositoryInfo(
         repoPath,
-        ctx.adoAuthHeader,
-        ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
-        ctx.config.allowedProjects
+        gitAuth.adoAuthHeader,
+        config.adoBaseUrl,
+        config.adoApiVersion ?? '7.1',
+        config.allowedProjects
       );
 
       if (!repoInfo) {
         return c.text('Repository not found', 404);
       }
 
-      const adoGitUrl = `${ctx.config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-upload-pack`;
+      const adoGitUrl = `${config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-upload-pack`;
       const requestBody = await c.req.arrayBuffer();
 
       const response = await fetch(adoGitUrl, {
         method: 'POST',
         headers: {
-          Authorization: ctx.adoAuthHeader,
+          Authorization: gitAuth.adoAuthHeader,
           'Content-Type': c.req.header('Content-Type') ?? 'application/x-git-upload-pack-request',
         },
         body: requestBody,
@@ -4078,18 +4152,20 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
   // POST /:namespace/:project/git-receive-pack - Git push data.
   app.post('/:namespace/:project/git-receive-pack', async (c) => {
-    const ctx = c.var.ctx;
     const namespace = c.req.param('namespace');
     const project = c.req.param('project');
+
+    // Extract auth for Git HTTP.
+    const gitAuth = await extractGitAuth(c);
 
     console.log('[Git Smart HTTP] git-receive-pack request:', {
       namespace,
       project,
-      hasAuth: !!ctx?.adoAuthHeader,
+      hasAuth: !!gitAuth,
     });
 
     // Check for authentication.
-    if (!ctx?.adoAuthHeader) {
+    if (!gitAuth) {
       return c.text('Authentication required', 401, {
         'WWW-Authenticate': 'Basic realm="Git"',
       });
@@ -4099,23 +4175,23 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       const repoPath = `${namespace}/${project}`;
       const repoInfo = await fetchRepositoryInfo(
         repoPath,
-        ctx.adoAuthHeader,
-        ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
-        ctx.config.allowedProjects
+        gitAuth.adoAuthHeader,
+        config.adoBaseUrl,
+        config.adoApiVersion ?? '7.1',
+        config.allowedProjects
       );
 
       if (!repoInfo) {
         return c.text('Repository not found', 404);
       }
 
-      const adoGitUrl = `${ctx.config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-receive-pack`;
+      const adoGitUrl = `${config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-receive-pack`;
       const requestBody = await c.req.arrayBuffer();
 
       const response = await fetch(adoGitUrl, {
         method: 'POST',
         headers: {
-          Authorization: ctx.adoAuthHeader,
+          Authorization: gitAuth.adoAuthHeader,
           'Content-Type': c.req.header('Content-Type') ?? 'application/x-git-receive-pack-request',
         },
         body: requestBody,
