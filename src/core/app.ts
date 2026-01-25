@@ -36,6 +36,27 @@ export function createApp(config: ProxyConfig): Hono<Env> {
   // Middleware: Logger.
   app.use('*', logger());
 
+  // Middleware: Debug request logger for all requests.
+  app.use('*', async (c, next) => {
+    const start = Date.now();
+    const { method, url } = c.req;
+    const path = new URL(url).pathname;
+    
+    console.log(`[REQUEST] ${method} ${path}`, {
+      fullUrl: url,
+      headers: {
+        'content-type': c.req.header('content-type'),
+        'private-token': c.req.header('private-token') ? 'present' : 'absent',
+        'authorization': c.req.header('authorization') ? 'present' : 'absent',
+      },
+    });
+    
+    await next();
+    
+    const duration = Date.now() - start;
+    console.log(`[RESPONSE] ${method} ${path} -> ${c.res.status} (${duration}ms)`);
+  });
+
   /**
    * Helper function to fetch repository info and extract project name.
    * This allows us to use project-level URLs even when we only have the repository GUID or name.
@@ -1118,6 +1139,11 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     const { ctx } = c.var;
     const projectId = c.req.param('id');
 
+    console.log('[GET /api/v4/projects/:id/repository/branches] Request:', {
+      projectId,
+      hasAuth: !!ctx.adoAuthHeader,
+    });
+
     try {
       // First, get repository info to know the default branch and project name.
       const repoInfo = await fetchRepositoryInfo(
@@ -1174,9 +1200,15 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         MappingService.mapRefToBranch(ref, defaultBranch)
       );
 
+      console.log('[GET /api/v4/projects/:id/repository/branches] Success:', {
+        projectId,
+        branchCount: branches.length,
+        branchNames: branches.slice(0, 5).map((b) => b.name),
+      });
+
       return c.json(branches);
     } catch (error) {
-      console.error('Error fetching branches:', error);
+      console.error('[GET /api/v4/projects/:id/repository/branches] Error:', error);
       return c.json(
         {
           error: 'Internal Server Error',
