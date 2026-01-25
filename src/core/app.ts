@@ -1001,11 +1001,15 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       const tokenValue = `glpat-${Buffer.from(`${tokenId}-${Math.random().toString(36).substring(2)}`).toString('base64url')}`;
 
       // Calculate expiration.
+      // GitLab expects expires_at as date only (YYYY-MM-DD), not full ISO timestamp.
       let expiresAt: string | null = null;
+      let expiresAtDate: string | null = null;
       let ttlSeconds: number | undefined;
       if (body.expires_at) {
-        expiresAt = body.expires_at;
         const expiresDate = new Date(body.expires_at);
+        expiresAt = expiresDate.toISOString();
+        // Extract just the date portion for the API response.
+        expiresAtDate = expiresAt.split('T')[0];
         ttlSeconds = Math.max(0, Math.floor((expiresDate.getTime() - Date.now()) / 1000));
       }
 
@@ -1050,7 +1054,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         user_id: storedToken.userId,
         last_used_at: null,
         active: true,
-        expires_at: expiresAt,
+        expires_at: expiresAtDate,
         token: tokenValue,
         access_level: storedToken.accessLevel,
       };
@@ -1060,7 +1064,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         tokenId,
         name: body.name,
         tokenPrefix: tokenValue.substring(0, 15) + '...',
-        expiresAt,
+        expiresAtDate,
       });
 
       return c.json(response, 201);
@@ -3161,6 +3165,11 @@ export function createApp(config: ProxyConfig): Hono<Env> {
             name: tokenData.name,
           });
 
+          // Convert expires_at to date-only format if present.
+          const expiresAtDate = tokenData.expiresAt
+            ? tokenData.expiresAt.split('T')[0]
+            : null;
+
           return c.json({
             id: tokenData.id,
             name: tokenData.name,
@@ -3170,7 +3179,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
             user_id: tokenData.userId,
             last_used_at: tokenData.lastUsedAt,
             active: !tokenData.revoked,
-            expires_at: tokenData.expiresAt,
+            expires_at: expiresAtDate,
             access_level: tokenData.accessLevel,
           });
         }
