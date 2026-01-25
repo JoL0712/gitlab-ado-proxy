@@ -6,9 +6,13 @@ import type {
   ProxyConfig,
   RequestContext,
   GitLabMergeRequestCreate,
+  GitLabCommitCreate,
   ADORepository,
   ADOGitRefsResponse,
   ADOPullRequest,
+  ADOTreeResponse,
+  ADOCommitsResponse,
+  ADOCommit,
 } from './types.js';
 
 // Create the Hono app with typed context.
@@ -127,6 +131,145 @@ export function createApp(config: ProxyConfig): Hono<Env> {
   // Health check endpoint.
   app.get('/health', (c) => {
     return c.json({ status: 'healthy', timestamp: new Date().toISOString() });
+  });
+
+  // GET /api/v4/user - Get current authenticated user.
+  app.get('/api/v4/user', async (c) => {
+    const { ctx } = c.var;
+
+    try {
+      // ADO uses the Connection Data API to get current user info.
+      const profileUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        '/_apis/connectionData',
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      const response = await fetch(profileUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: response.status,
+          },
+          response.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const data = (await response.json()) as {
+        authenticatedUser: {
+          id: string;
+          descriptor: string;
+          subjectDescriptor: string;
+          providerDisplayName: string;
+          isActive: boolean;
+          properties: {
+            Account?: { $value: string };
+          };
+        };
+      };
+
+      // Map to GitLab user format.
+      const user = MappingService.mapUserProfileToUser({
+        id: data.authenticatedUser.id,
+        displayName: data.authenticatedUser.providerDisplayName,
+        publicAlias: data.authenticatedUser.providerDisplayName,
+        emailAddress: data.authenticatedUser.properties?.Account?.$value ?? '',
+        coreRevision: 0,
+        timeStamp: new Date().toISOString(),
+        revision: 0,
+      });
+
+      return c.json(user);
+    } catch (error) {
+      console.error('Error fetching user:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
+  // GET /api/v4/projects - List all projects (repositories).
+  app.get('/api/v4/projects', async (c) => {
+    const { ctx } = c.var;
+
+    // Query parameters.
+    const search = c.req.query('search');
+    const perPage = parseInt(c.req.query('per_page') ?? '20', 10);
+
+    try {
+      // List all repositories in the organization.
+      const reposUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        '/_apis/git/repositories',
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      const response = await fetch(reposUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: response.status,
+          },
+          response.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const data = (await response.json()) as { value: ADORepository[]; count: number };
+      
+      // Filter by search term if provided.
+      let repos = data.value;
+      if (search) {
+        const searchLower = search.toLowerCase();
+        repos = repos.filter(
+          (r) =>
+            r.name.toLowerCase().includes(searchLower) ||
+            r.project.name.toLowerCase().includes(searchLower)
+        );
+      }
+
+      // Limit results.
+      repos = repos.slice(0, perPage);
+
+      // Map to GitLab projects format.
+      const projects = repos.map((repo) => MappingService.mapRepositoryToProject(repo));
+
+      return c.json(projects);
+    } catch (error) {
+      console.error('Error listing projects:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
   });
 
   // GET /api/v4/projects/:id - Get project (repository) details.
@@ -562,6 +705,467 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       return c.json(mergeRequest);
     } catch (error) {
       console.error('Error fetching merge request:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
+  // GET /api/v4/projects/:id/repository/tree - List repository tree (files and directories).
+  app.get('/api/v4/projects/:id/repository/tree', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+
+    // Query parameters.
+    const path = c.req.query('path') ?? '';
+    const ref = c.req.query('ref') ?? 'main';
+    const recursive = c.req.query('recursive') === 'true';
+
+    try {
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Build tree URL with path and version.
+      let treePath = `/_apis/git/repositories/${projectId}/items`;
+      const queryParams: string[] = [];
+      queryParams.push(`scopePath=${encodeURIComponent(path || '/')}`);
+      queryParams.push(`recursionLevel=${recursive ? 'Full' : 'OneLevel'}`);
+      queryParams.push(`versionDescriptor.version=${encodeURIComponent(ref)}`);
+      queryParams.push('versionDescriptor.versionType=branch');
+
+      if (queryParams.length > 0) {
+        treePath += `?${queryParams.join('&')}`;
+      }
+
+      const treeUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        treePath,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const response = await fetch(treeUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: response.status,
+          },
+          response.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const data = (await response.json()) as ADOTreeResponse;
+      
+      // Map to GitLab tree format, filtering out the root.
+      const treeItems = data.value
+        .filter((item) => item.relativePath && item.relativePath !== '/')
+        .map((item) => MappingService.mapTreeItemToGitLabTreeItem(item));
+
+      return c.json(treeItems);
+    } catch (error) {
+      console.error('Error fetching tree:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
+  // GET /api/v4/projects/:id/repository/files/:file_path - Get file content.
+  app.get('/api/v4/projects/:id/repository/files/:file_path{.+}', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+    const filePath = c.req.param('file_path');
+    const ref = c.req.query('ref') ?? 'main';
+
+    try {
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Build file URL.
+      const encodedPath = encodeURIComponent(`/${filePath}`);
+      let itemPath = `/_apis/git/repositories/${projectId}/items`;
+      itemPath += `?path=${encodedPath}`;
+      itemPath += `&versionDescriptor.version=${encodeURIComponent(ref)}`;
+      itemPath += '&versionDescriptor.versionType=branch';
+      itemPath += '&includeContent=true';
+
+      const itemUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        itemPath,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const response = await fetch(itemUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          Accept: 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          return c.json(
+            {
+              error: 'Not Found',
+              message: `File '${filePath}' not found`,
+              statusCode: 404,
+            },
+            404
+          );
+        }
+        const errorText = await response.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: response.status,
+          },
+          response.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      // Get the raw content.
+      const contentType = response.headers.get('Content-Type') ?? '';
+      let content: string;
+      let isBase64 = false;
+
+      if (contentType.includes('application/json')) {
+        // JSON response with metadata.
+        const data = (await response.json()) as {
+          objectId: string;
+          commitId: string;
+          path: string;
+          content?: string;
+        };
+        content = data.content ?? '';
+      } else {
+        // Raw content - encode as base64.
+        const buffer = await response.arrayBuffer();
+        content = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+        isBase64 = true;
+      }
+
+      // Get commit info for the file.
+      const commitsPath = `/_apis/git/repositories/${projectId}/commits?searchCriteria.itemPath=${encodedPath}&searchCriteria.$top=1`;
+      const commitsUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        commitsPath,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const commitsResponse = await fetch(commitsUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      let commitId = '';
+      if (commitsResponse.ok) {
+        const commitsData = (await commitsResponse.json()) as ADOCommitsResponse;
+        if (commitsData.value.length > 0) {
+          commitId = commitsData.value[0].commitId;
+        }
+      }
+
+      const file = MappingService.mapItemToGitLabFile(
+        filePath,
+        content,
+        commitId,
+        commitId,
+        ref,
+        isBase64
+      );
+
+      return c.json(file);
+    } catch (error) {
+      console.error('Error fetching file:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
+  // GET /api/v4/projects/:id/repository/commits - List commits.
+  app.get('/api/v4/projects/:id/repository/commits', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+
+    // Query parameters.
+    const ref = c.req.query('ref_name') ?? c.req.query('ref') ?? 'main';
+    const path = c.req.query('path');
+    const perPage = parseInt(c.req.query('per_page') ?? '20', 10);
+
+    try {
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Build commits URL.
+      const queryParams: string[] = [];
+      queryParams.push(`searchCriteria.itemVersion.version=${encodeURIComponent(ref)}`);
+      queryParams.push('searchCriteria.itemVersion.versionType=branch');
+      queryParams.push(`searchCriteria.$top=${perPage}`);
+      if (path) {
+        queryParams.push(`searchCriteria.itemPath=${encodeURIComponent(path)}`);
+      }
+
+      const commitsPath = `/_apis/git/repositories/${projectId}/commits?${queryParams.join('&')}`;
+      const commitsUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        commitsPath,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const response = await fetch(commitsUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: response.status,
+          },
+          response.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const data = (await response.json()) as ADOCommitsResponse;
+      const commits = data.value.map((commit) =>
+        MappingService.mapCommitToGitLabCommit(commit)
+      );
+
+      return c.json(commits);
+    } catch (error) {
+      console.error('Error fetching commits:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
+  // POST /api/v4/projects/:id/repository/commits - Create a commit.
+  app.post('/api/v4/projects/:id/repository/commits', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+
+    try {
+      const commitCreate: GitLabCommitCreate = await c.req.json();
+
+      // Validate required fields.
+      if (!commitCreate.branch || !commitCreate.commit_message || !commitCreate.actions?.length) {
+        return c.json(
+          {
+            error: 'Bad Request',
+            message: 'branch, commit_message, and actions are required',
+            statusCode: 400,
+          },
+          400
+        );
+      }
+
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Get the current commit SHA for the branch.
+      const refUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/refs?filter=heads/${commitCreate.branch}`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const refResponse = await fetch(refUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!refResponse.ok) {
+        const errorText = await refResponse.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: refResponse.status,
+          },
+          refResponse.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const refData = (await refResponse.json()) as ADOGitRefsResponse;
+      if (refData.value.length === 0) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Branch '${commitCreate.branch}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      const oldObjectId = refData.value[0].objectId;
+
+      // Convert to ADO Push format.
+      const push = MappingService.mapCommitCreateToPush(commitCreate, oldObjectId);
+
+      // Create the push (commit).
+      const pushUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/pushes`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const pushResponse = await fetch(pushUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(push),
+      });
+
+      if (!pushResponse.ok) {
+        const errorText = await pushResponse.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: pushResponse.status,
+          },
+          pushResponse.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const pushData = (await pushResponse.json()) as {
+        commits: ADOCommit[];
+        refUpdates: { name: string; newObjectId: string }[];
+      };
+
+      // Return the created commit.
+      if (pushData.commits && pushData.commits.length > 0) {
+        const commit = MappingService.mapCommitToGitLabCommit(pushData.commits[0]);
+        return c.json(commit, 201);
+      }
+
+      return c.json(
+        {
+          id: pushData.refUpdates[0]?.newObjectId ?? '',
+          message: commitCreate.commit_message,
+        },
+        201
+      );
+    } catch (error) {
+      console.error('Error creating commit:', error);
       return c.json(
         {
           error: 'Internal Server Error',

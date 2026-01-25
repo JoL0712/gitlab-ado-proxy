@@ -11,11 +11,44 @@ A cloud-agnostic middleware that emulates GitLab's REST API and proxies requests
 
 ## Supported Endpoints
 
+### User & Authentication
+
 | GitLab API | Azure DevOps API | Description |
 |------------|------------------|-------------|
+| `GET /api/v4/user` | `GET /_apis/connectionData` | Get current authenticated user |
+
+### Projects (Repositories)
+
+| GitLab API | Azure DevOps API | Description |
+|------------|------------------|-------------|
+| `GET /api/v4/projects` | `GET /_apis/git/repositories` | List all repositories |
 | `GET /api/v4/projects/:id` | `GET /_apis/git/repositories/:id` | Get project details |
+
+### Branches
+
+| GitLab API | Azure DevOps API | Description |
+|------------|------------------|-------------|
 | `GET /api/v4/projects/:id/repository/branches` | `GET /_apis/git/repositories/:id/refs?filter=heads` | List branches |
 | `GET /api/v4/projects/:id/repository/branches/:branch` | `GET /_apis/git/repositories/:id/refs?filter=heads/:branch` | Get single branch |
+
+### Files & Tree
+
+| GitLab API | Azure DevOps API | Description |
+|------------|------------------|-------------|
+| `GET /api/v4/projects/:id/repository/tree` | `GET /_apis/git/repositories/:id/items` | List files and directories |
+| `GET /api/v4/projects/:id/repository/files/:path` | `GET /_apis/git/repositories/:id/items?path=` | Get file content |
+
+### Commits
+
+| GitLab API | Azure DevOps API | Description |
+|------------|------------------|-------------|
+| `GET /api/v4/projects/:id/repository/commits` | `GET /_apis/git/repositories/:id/commits` | List commits |
+| `POST /api/v4/projects/:id/repository/commits` | `POST /_apis/git/repositories/:id/pushes` | Create commit(s) |
+
+### Merge Requests (Pull Requests)
+
+| GitLab API | Azure DevOps API | Description |
+|------------|------------------|-------------|
 | `POST /api/v4/projects/:id/merge_requests` | `POST /_apis/git/repositories/:id/pullrequests` | Create merge request |
 | `GET /api/v4/projects/:id/merge_requests` | `GET /_apis/git/repositories/:id/pullrequests` | List merge requests |
 | `GET /api/v4/projects/:id/merge_requests/:iid` | `GET /_apis/git/repositories/:id/pullrequests/:id` | Get single merge request |

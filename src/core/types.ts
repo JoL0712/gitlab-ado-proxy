@@ -84,6 +84,80 @@ export interface GitLabMergeRequestCreate {
   remove_source_branch?: boolean;
 }
 
+// GitLab User.
+export interface GitLabUser {
+  id: number;
+  username: string;
+  name: string;
+  state: 'active' | 'blocked' | 'deactivated';
+  avatar_url: string;
+  web_url: string;
+  email: string;
+  is_admin: boolean;
+  can_create_group: boolean;
+  can_create_project: boolean;
+}
+
+// GitLab Tree Item (file/directory in repository).
+export interface GitLabTreeItem {
+  id: string;
+  name: string;
+  type: 'tree' | 'blob';
+  path: string;
+  mode: string;
+}
+
+// GitLab File.
+export interface GitLabFile {
+  file_name: string;
+  file_path: string;
+  size: number;
+  encoding: 'base64' | 'text';
+  content: string;
+  content_sha256: string;
+  ref: string;
+  blob_id: string;
+  commit_id: string;
+  last_commit_id: string;
+}
+
+// GitLab Commit.
+export interface GitLabCommit {
+  id: string;
+  short_id: string;
+  title: string;
+  author_name: string;
+  author_email: string;
+  authored_date: string;
+  committer_name: string;
+  committer_email: string;
+  committed_date: string;
+  created_at: string;
+  message: string;
+  parent_ids: string[];
+  web_url: string;
+}
+
+// GitLab Commit Create Payload.
+export interface GitLabCommitCreate {
+  branch: string;
+  commit_message: string;
+  actions: GitLabCommitAction[];
+  author_email?: string;
+  author_name?: string;
+  start_branch?: string;
+}
+
+// GitLab Commit Action.
+export interface GitLabCommitAction {
+  action: 'create' | 'delete' | 'move' | 'update' | 'chmod';
+  file_path: string;
+  content?: string;
+  encoding?: 'text' | 'base64';
+  previous_path?: string;
+  last_commit_id?: string;
+}
+
 /**
  * Azure DevOps API Types.
  * These represent the request/response shapes for ADO's REST API.
@@ -185,7 +259,91 @@ export interface ADOCommit {
     date: string;
   };
   comment: string;
+  changeCounts?: {
+    Add: number;
+    Edit: number;
+    Delete: number;
+  };
   url: string;
+  parents?: string[];
+}
+
+// ADO Commits Response.
+export interface ADOCommitsResponse {
+  value: ADOCommit[];
+  count: number;
+}
+
+// ADO User Profile.
+export interface ADOUserProfile {
+  displayName: string;
+  publicAlias: string;
+  emailAddress: string;
+  coreRevision: number;
+  timeStamp: string;
+  id: string;
+  revision: number;
+}
+
+// ADO Tree Item (file/directory).
+export interface ADOTreeItem {
+  objectId: string;
+  relativePath: string;
+  mode: string;
+  gitObjectType: 'blob' | 'tree';
+  url: string;
+  size?: number;
+}
+
+// ADO Tree Response.
+export interface ADOTreeResponse {
+  value: ADOTreeItem[];
+  count: number;
+}
+
+// ADO Item (file content).
+export interface ADOItem {
+  objectId: string;
+  gitObjectType: 'blob' | 'tree';
+  commitId: string;
+  path: string;
+  url: string;
+  content?: string;
+}
+
+// ADO Push (for creating commits).
+export interface ADOPush {
+  refUpdates: ADORefUpdate[];
+  commits: ADOPushCommit[];
+}
+
+// ADO Ref Update.
+export interface ADORefUpdate {
+  name: string;
+  oldObjectId: string;
+}
+
+// ADO Push Commit.
+export interface ADOPushCommit {
+  comment: string;
+  changes: ADOChange[];
+  author?: {
+    name: string;
+    email: string;
+  };
+}
+
+// ADO Change.
+export interface ADOChange {
+  changeType: 'add' | 'edit' | 'delete' | 'rename';
+  item: {
+    path: string;
+  };
+  newContent?: {
+    content: string;
+    contentType: 'rawtext' | 'base64encoded';
+  };
+  sourceServerItem?: string;
 }
 
 /**

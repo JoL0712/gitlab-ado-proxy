@@ -3,11 +3,19 @@ import type {
   GitLabBranch,
   GitLabMergeRequest,
   GitLabMergeRequestCreate,
+  GitLabUser,
+  GitLabTreeItem,
+  GitLabFile,
+  GitLabCommit,
+  GitLabCommitCreate,
   ADORepository,
   ADOGitRef,
   ADOPullRequest,
   ADOPullRequestCreate,
   ADOCommit,
+  ADOUserProfile,
+  ADOTreeItem,
+  ADOPush,
 } from './types.js';
 
 /**
@@ -171,5 +179,160 @@ export class MappingService {
     // Add api-version query parameter.
     const separator = normalizedPath.includes('?') ? '&' : '?';
     return `${fullUrl}${separator}api-version=${apiVersion}`;
+  }
+
+  /**
+   * Map ADO User Profile to GitLab User format.
+   */
+  static mapUserProfileToUser(profile: ADOUserProfile): GitLabUser {
+    return {
+      id: parseInt(profile.id.replace(/-/g, '').substring(0, 8), 16) || 1,
+      username: profile.publicAlias || profile.emailAddress?.split('@')[0] || 'user',
+      name: profile.displayName,
+      state: 'active',
+      avatar_url: '',
+      web_url: '',
+      email: profile.emailAddress || '',
+      is_admin: false,
+      can_create_group: true,
+      can_create_project: true,
+    };
+  }
+
+  /**
+   * Map ADO Tree Item to GitLab Tree Item format.
+   */
+  static mapTreeItemToGitLabTreeItem(item: ADOTreeItem): GitLabTreeItem {
+    const pathParts = item.relativePath.split('/');
+    const name = pathParts[pathParts.length - 1];
+
+    return {
+      id: item.objectId,
+      name: name,
+      type: item.gitObjectType === 'tree' ? 'tree' : 'blob',
+      path: item.relativePath,
+      mode: item.mode || (item.gitObjectType === 'tree' ? '040000' : '100644'),
+    };
+  }
+
+  /**
+   * Map ADO Item (file) to GitLab File format.
+   */
+  static mapItemToGitLabFile(
+    path: string,
+    content: string,
+    objectId: string,
+    commitId: string,
+    ref: string,
+    isBase64: boolean = false
+  ): GitLabFile {
+    const pathParts = path.split('/');
+    const fileName = pathParts[pathParts.length - 1];
+    
+    // Calculate content size.
+    const size = isBase64 ? Math.floor(content.length * 0.75) : content.length;
+
+    return {
+      file_name: fileName,
+      file_path: path.startsWith('/') ? path.substring(1) : path,
+      size: size,
+      encoding: isBase64 ? 'base64' : 'text',
+      content: content,
+      content_sha256: objectId,
+      ref: ref,
+      blob_id: objectId,
+      commit_id: commitId,
+      last_commit_id: commitId,
+    };
+  }
+
+  /**
+   * Map ADO Commit to GitLab Commit format.
+   */
+  static mapCommitToGitLabCommit(commit: ADOCommit, webUrl?: string): GitLabCommit {
+    return {
+      id: commit.commitId,
+      short_id: commit.commitId.substring(0, 8),
+      title: commit.comment?.split('\n')[0] ?? '',
+      author_name: commit.author?.name ?? '',
+      author_email: commit.author?.email ?? '',
+      authored_date: commit.author?.date ?? new Date().toISOString(),
+      committer_name: commit.committer?.name ?? '',
+      committer_email: commit.committer?.email ?? '',
+      committed_date: commit.committer?.date ?? new Date().toISOString(),
+      created_at: commit.author?.date ?? new Date().toISOString(),
+      message: commit.comment ?? '',
+      parent_ids: commit.parents ?? [],
+      web_url: webUrl ?? commit.url ?? '',
+    };
+  }
+
+  /**
+   * Map GitLab Commit Create payload to ADO Push format.
+   */
+  static mapCommitCreateToPush(
+    commitCreate: GitLabCommitCreate,
+    oldObjectId: string
+  ): ADOPush {
+    const changes = commitCreate.actions.map((action) => {
+      const changeTypeMap: Record<string, 'add' | 'edit' | 'delete' | 'rename'> = {
+        create: 'add',
+        update: 'edit',
+        delete: 'delete',
+        move: 'rename',
+        chmod: 'edit',
+      };
+
+      const change: {
+        changeType: 'add' | 'edit' | 'delete' | 'rename';
+        item: { path: string };
+        newContent?: { content: string; contentType: 'rawtext' | 'base64encoded' };
+        sourceServerItem?: string;
+      } = {
+        changeType: changeTypeMap[action.action] ?? 'edit',
+        item: {
+          path: action.file_path.startsWith('/') ? action.file_path : `/${action.file_path}`,
+        },
+      };
+
+      if (action.content !== undefined && action.action !== 'delete') {
+        change.newContent = {
+          content: action.content,
+          contentType: action.encoding === 'base64' ? 'base64encoded' : 'rawtext',
+        };
+      }
+
+      if (action.previous_path && action.action === 'move') {
+        change.sourceServerItem = action.previous_path.startsWith('/')
+          ? action.previous_path
+          : `/${action.previous_path}`;
+      }
+
+      return change;
+    });
+
+    const push: ADOPush = {
+      refUpdates: [
+        {
+          name: `refs/heads/${commitCreate.branch}`,
+          oldObjectId: oldObjectId,
+        },
+      ],
+      commits: [
+        {
+          comment: commitCreate.commit_message,
+          changes: changes,
+        },
+      ],
+    };
+
+    if (commitCreate.author_name || commitCreate.author_email) {
+      push.commits[0].author = {
+        name: commitCreate.author_name ?? '',
+        email: commitCreate.author_email ?? '',
+      };
+    }
+
+    return push;
   }
 }
