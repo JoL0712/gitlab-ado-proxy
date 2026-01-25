@@ -1004,8 +1004,10 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       const adoPat = decoded.startsWith(':') ? decoded.slice(1) : decoded;
 
       // Generate a unique token ID and the token value itself.
-      const tokenId = Date.now();
-      const tokenValue = `glpat-${Buffer.from(`${tokenId}-${Math.random().toString(36).substring(2)}`).toString('base64url')}`;
+      // Use a smaller ID to stay within 32-bit integer range that some systems expect.
+      const tokenId = (Date.now() % 2147483647);
+      const randomPart = Math.random().toString(36).substring(2);
+      const tokenValue = `glpat-${Buffer.from(`${Date.now()}-${randomPart}`).toString('base64url')}`;
 
       // Calculate expiration.
       // GitLab expects expires_at as date only (YYYY-MM-DD), not full ISO timestamp.
