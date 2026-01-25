@@ -59,6 +59,12 @@ variable "oauth_client_secret" {
   sensitive   = true
 }
 
+variable "allowed_projects" {
+  description = "Comma-separated list of allowed ADO project names. If set, only repositories from these projects will be accessible. If empty, all projects are accessible."
+  type        = string
+  default     = ""
+}
+
 ###############################################################################
 # Lambda Configuration
 ###############################################################################

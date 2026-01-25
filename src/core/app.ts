@@ -61,12 +61,14 @@ export function createApp(config: ProxyConfig): Hono<Env> {
    * Helper function to fetch repository info and extract project name.
    * This allows us to use project-level URLs even when we only have the repository GUID or name.
    * Supports both repository GUIDs (works at org level) and repository names (requires search).
+   * Also enforces project access restrictions if allowedProjects is configured.
    */
   async function fetchRepositoryInfo(
     repositoryId: string,
     adoAuthHeader: string,
     adoBaseUrl: string,
-    adoApiVersion: string
+    adoApiVersion: string,
+    allowedProjects?: string[]
   ): Promise<{ repo: ADORepository; projectName: string } | null> {
     try {
       // First, try to get repository at organization level (works for GUIDs).
@@ -86,6 +88,20 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
       if (response.ok) {
         const repo = (await response.json()) as ADORepository;
+
+        // Check if this repository's project is in the allowed list.
+        if (allowedProjects && allowedProjects.length > 0) {
+          const allowedLower = allowedProjects.map((p) => p.toLowerCase());
+          if (!allowedLower.includes(repo.project.name.toLowerCase())) {
+            console.warn('[fetchRepositoryInfo] Repository project not in allowed list:', {
+              repositoryId,
+              projectName: repo.project.name,
+              allowedProjects,
+            });
+            return null;
+          }
+        }
+
         return { repo, projectName: repo.project.name };
       }
 
@@ -110,7 +126,15 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
         if (listResponse.ok) {
           const reposData = (await listResponse.json()) as { value: ADORepository[] };
-          const matchingRepo = reposData.value.find(
+          
+          // Filter by allowed projects if configured.
+          let repos = reposData.value;
+          if (allowedProjects && allowedProjects.length > 0) {
+            const allowedLower = allowedProjects.map((p) => p.toLowerCase());
+            repos = repos.filter((r) => allowedLower.includes(r.project.name.toLowerCase()));
+          }
+
+          const matchingRepo = repos.find(
             (r) => r.name.toLowerCase() === repositoryId.toLowerCase() || r.id === repositoryId
           );
 
@@ -605,10 +629,24 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         totalRepos: data.count,
         returnedRepos: data.value.length,
         firstRepo: data.value[0]?.name,
+        allowedProjects: ctx.config.allowedProjects ?? 'all',
       });
       
-      // Filter by search term if provided.
       let repos = data.value;
+
+      // Filter by allowed projects if configured.
+      if (ctx.config.allowedProjects && ctx.config.allowedProjects.length > 0) {
+        const allowedLower = ctx.config.allowedProjects.map((p) => p.toLowerCase());
+        const beforeFilter = repos.length;
+        repos = repos.filter((r) => allowedLower.includes(r.project.name.toLowerCase()));
+        console.log('[GET /api/v4/projects] After allowed projects filter:', {
+          before: beforeFilter,
+          after: repos.length,
+          allowedProjects: ctx.config.allowedProjects,
+        });
+      }
+
+      // Filter by search term if provided.
       if (search) {
         const searchLower = search.toLowerCase();
         const beforeFilter = repos.length;
@@ -1363,7 +1401,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -1408,7 +1447,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -1496,7 +1536,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -1594,7 +1635,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -1691,7 +1733,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -1835,7 +1878,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -1968,7 +2012,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -2052,7 +2097,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -2129,7 +2175,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -2205,7 +2252,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -2296,7 +2344,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -2410,7 +2459,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -2566,7 +2616,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -2652,7 +2703,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -2795,7 +2847,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -2882,7 +2935,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -3026,7 +3080,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -3108,7 +3163,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -3201,7 +3257,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -3334,7 +3391,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
+        ctx.config.adoApiVersion ?? '7.1',
+        ctx.config.allowedProjects
       );
 
       if (!repoInfo) {
@@ -3598,10 +3656,19 @@ export function createApp(config: ProxyConfig): Hono<Env> {
   return app;
 }
 
+// Parse allowed projects from comma-separated environment variable.
+function parseAllowedProjects(envVar?: string): string[] | undefined {
+  if (!envVar || envVar.trim() === '') {
+    return undefined;
+  }
+  return envVar.split(',').map((p) => p.trim()).filter((p) => p.length > 0);
+}
+
 // Export a default app instance for simple usage.
 export const app = createApp({
   adoBaseUrl: process.env.ADO_BASE_URL ?? 'https://dev.azure.com/org',
   adoApiVersion: process.env.ADO_API_VERSION ?? '7.1',
   oauthClientId: process.env.OAUTH_CLIENT_ID,
   oauthClientSecret: process.env.OAUTH_CLIENT_SECRET,
+  allowedProjects: parseAllowedProjects(process.env.ALLOWED_PROJECTS),
 });

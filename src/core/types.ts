@@ -404,6 +404,10 @@ export interface ProxyConfig {
   oauthClientId?: string;
   // Optional: OAuth client secret for validating OAuth token exchange.
   oauthClientSecret?: string;
+  // Optional: Comma-separated list of allowed ADO project names.
+  // If set, only repositories from these projects will be accessible.
+  // If not set, all projects are accessible.
+  allowedProjects?: string[];
 }
 
 /**

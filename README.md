@@ -218,6 +218,35 @@ Your Azure DevOps Personal Access Token (PAT) should have appropriate permission
 - **Code**: Read (for projects and branches)
 - **Code**: Write (for creating pull requests)
 
+## Access Control
+
+You can limit which Azure DevOps projects are accessible through the proxy using the `ALLOWED_PROJECTS` environment variable. This is useful for:
+
+- Restricting access to specific projects for security
+- Reducing scope when you only need access to certain repositories
+- Multi-tenant deployments where different users have access to different projects
+
+### Configuration
+
+Set the `ALLOWED_PROJECTS` environment variable to a comma-separated list of project names:
+
+```bash
+# Single project
+ALLOWED_PROJECTS=MyProject
+
+# Multiple projects
+ALLOWED_PROJECTS=Project1,Project2,Another Project
+```
+
+If `ALLOWED_PROJECTS` is not set or is empty, all projects in the organization are accessible.
+
+### Behavior
+
+When `ALLOWED_PROJECTS` is configured:
+- `GET /api/v4/projects` only returns repositories from allowed projects
+- All repository operations (branches, commits, files, etc.) are blocked for repositories outside allowed projects
+- Requests to restricted repositories return a 404 "Not Found" error
+
 ## AWS Deployment
 
 ### 1. Configure Variables
@@ -294,6 +323,7 @@ curl -H "PRIVATE-TOKEN: your-ado-pat" \
 |----------|-------------|---------|
 | `ADO_BASE_URL` | Azure DevOps organization URL (project-agnostic) | Required |
 | `ADO_API_VERSION` | Azure DevOps API version | `7.1` |
+| `ALLOWED_PROJECTS` | Comma-separated list of allowed ADO project names. If set, only repositories from these projects will be accessible. | None (all projects) |
 | `OAUTH_CLIENT_ID` | OAuth client ID for validating OAuth requests (optional, recommended for security) | None (accepts any) |
 | `OAUTH_CLIENT_SECRET` | OAuth client secret for validating token exchange (optional, recommended for security) | None (accepts any) |
 | `PORT` | Local server port (Node.js only) | `3000` |

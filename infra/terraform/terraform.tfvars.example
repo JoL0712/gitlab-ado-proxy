@@ -26,6 +26,12 @@ ado_api_version = "7.1"
 oauth_client_id     = ""
 oauth_client_secret = ""
 
+# Access control configuration (optional).
+# Comma-separated list of allowed ADO project names.
+# If set, only repositories from these projects will be accessible.
+# If empty, all projects are accessible.
+allowed_projects = ""
+
 # Lambda configuration.
 lambda_timeout = 30
 lambda_memory  = 256
