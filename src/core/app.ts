@@ -903,13 +903,18 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         perPage,
       });
 
+      // Get proxy base URL from request for constructing web_url.
+      const requestUrl = new URL(c.req.url);
+      const proxyBaseUrl = `${requestUrl.protocol}//${requestUrl.host}`;
+
       // Map to GitLab projects format.
-      const projects = repos.map((repo) => MappingService.mapRepositoryToProject(repo));
+      const projects = repos.map((repo) => MappingService.mapRepositoryToProject(repo, proxyBaseUrl));
 
       console.log('[GET /api/v4/projects] Success:', {
         returnedProjects: projects.length,
         projectIds: projects.map((p) => p.id),
         projectNames: projects.map((p) => p.name),
+        samplePathWithNamespace: projects[0]?.path_with_namespace,
       });
 
       return c.json(projects);
@@ -1654,11 +1659,16 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         );
       }
 
-      const gitlabProject = MappingService.mapRepositoryToProject(repoInfo.repo);
+      // Get proxy base URL from request for constructing web_url.
+      const requestUrl = new URL(c.req.url);
+      const proxyBaseUrl = `${requestUrl.protocol}//${requestUrl.host}`;
+
+      const gitlabProject = MappingService.mapRepositoryToProject(repoInfo.repo, proxyBaseUrl);
       console.log('[GET /api/v4/projects/:id] Success:', {
         projectId,
         repoName: repoInfo.repo.name,
         adoProject: repoInfo.projectName,
+        pathWithNamespace: gitlabProject.path_with_namespace,
       });
       return c.json(gitlabProject);
     } catch (error) {

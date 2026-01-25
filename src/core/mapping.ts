@@ -45,26 +45,33 @@ export class MappingService {
   /**
    * Map ADO Repository to GitLab Project format.
    */
-  static mapRepositoryToProject(repo: ADORepository): GitLabProject {
+  static mapRepositoryToProject(repo: ADORepository, proxyBaseUrl?: string): GitLabProject {
     // Create URL-safe paths.
     const projectPath = this.toUrlSafePath(repo.project.name);
     const repoPath = this.toUrlSafePath(repo.name);
     const pathWithNamespace = `${projectPath}/${repoPath}`;
 
+    // Use URL-safe names throughout to ensure consistency.
+    // Cursor may construct paths from namespace.name + name, so these must be URL-safe.
+    // Also construct web_url using the proxy base URL if provided.
+    const webUrl = proxyBaseUrl
+      ? `${proxyBaseUrl}/${pathWithNamespace}`
+      : repo.webUrl;
+
     return {
       id: repo.id,
-      name: repo.name,
+      name: repoPath,
       path: repoPath,
       description: null,
       default_branch: repo.defaultBranch?.replace('refs/heads/', '') ?? 'main',
       visibility: repo.project.visibility === 'public' ? 'public' : 'private',
-      web_url: repo.webUrl,
+      web_url: webUrl,
       ssh_url_to_repo: repo.sshUrl ?? '',
       http_url_to_repo: repo.remoteUrl ?? '',
       path_with_namespace: pathWithNamespace,
       namespace: {
         id: parseInt(repo.project.id, 16) || 0,
-        name: repo.project.name,
+        name: projectPath,
         path: projectPath,
         full_path: projectPath,
       },
