@@ -472,6 +472,282 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     }
   });
 
+  // POST /api/v4/projects/:id/repository/branches - Create a new branch.
+  app.post('/api/v4/projects/:id/repository/branches', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+
+    try {
+      const body = (await c.req.json()) as { branch: string; ref: string };
+
+      if (!body.branch || !body.ref) {
+        return c.json(
+          {
+            error: 'Bad Request',
+            message: 'branch and ref are required',
+            statusCode: 400,
+          },
+          400
+        );
+      }
+
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Get the source ref's commit SHA.
+      const sourceRefUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/refs?filter=heads/${body.ref}`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const sourceRefResponse = await fetch(sourceRefUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!sourceRefResponse.ok) {
+        const errorText = await sourceRefResponse.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: sourceRefResponse.status,
+          },
+          sourceRefResponse.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const sourceRefData = (await sourceRefResponse.json()) as ADOGitRefsResponse;
+      if (sourceRefData.value.length === 0) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Source branch '${body.ref}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      const sourceObjectId = sourceRefData.value[0].objectId;
+
+      // Create the new branch using refs API.
+      const refsUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/refs`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const refUpdate = [
+        {
+          name: `refs/heads/${body.branch}`,
+          oldObjectId: '0000000000000000000000000000000000000000',
+          newObjectId: sourceObjectId,
+        },
+      ];
+
+      const createResponse = await fetch(refsUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(refUpdate),
+      });
+
+      if (!createResponse.ok) {
+        const errorText = await createResponse.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: createResponse.status,
+          },
+          createResponse.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const createData = (await createResponse.json()) as { value: Array<{ name: string; newObjectId: string; success: boolean }> };
+      
+      if (!createData.value[0]?.success) {
+        return c.json(
+          {
+            error: 'Failed to create branch',
+            message: 'Branch creation failed',
+            statusCode: 400,
+          },
+          400
+        );
+      }
+
+      // Return the created branch.
+      const defaultBranch = repoInfo.repo.defaultBranch ?? 'refs/heads/main';
+      const newBranch = MappingService.mapRefToBranch(
+        {
+          name: `refs/heads/${body.branch}`,
+          objectId: sourceObjectId,
+          creator: { displayName: '', url: '', id: '', uniqueName: '', imageUrl: '' },
+          url: '',
+        },
+        defaultBranch
+      );
+
+      return c.json(newBranch, 201);
+    } catch (error) {
+      console.error('Error creating branch:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
+  // DELETE /api/v4/projects/:id/repository/branches/:branch - Delete a branch.
+  app.delete('/api/v4/projects/:id/repository/branches/:branch', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+    const branchName = c.req.param('branch');
+
+    try {
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Get the branch's current commit SHA.
+      const refUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/refs?filter=heads/${branchName}`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const refResponse = await fetch(refUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!refResponse.ok) {
+        const errorText = await refResponse.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: refResponse.status,
+          },
+          refResponse.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const refData = (await refResponse.json()) as ADOGitRefsResponse;
+      if (refData.value.length === 0) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Branch '${branchName}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      const currentObjectId = refData.value[0].objectId;
+
+      // Delete the branch using refs API.
+      const refsUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/refs`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const refUpdate = [
+        {
+          name: `refs/heads/${branchName}`,
+          oldObjectId: currentObjectId,
+          newObjectId: '0000000000000000000000000000000000000000',
+        },
+      ];
+
+      const deleteResponse = await fetch(refsUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(refUpdate),
+      });
+
+      if (!deleteResponse.ok) {
+        const errorText = await deleteResponse.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: deleteResponse.status,
+          },
+          deleteResponse.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      // Return 204 No Content on successful delete.
+      return c.body(null, 204);
+    } catch (error) {
+      console.error('Error deleting branch:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
   // POST /api/v4/projects/:id/merge_requests - Create merge request.
   app.post('/api/v4/projects/:id/merge_requests', async (c) => {
     const { ctx } = c.var;
@@ -716,6 +992,369 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     }
   });
 
+  // PUT /api/v4/projects/:id/merge_requests/:mr_iid - Update merge request.
+  app.put('/api/v4/projects/:id/merge_requests/:mr_iid', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+    const mrIid = c.req.param('mr_iid');
+
+    try {
+      const body = (await c.req.json()) as {
+        title?: string;
+        description?: string;
+        state_event?: 'close' | 'reopen';
+      };
+
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Build ADO PR update payload.
+      const adoUpdate: { title?: string; description?: string; status?: string } = {};
+      if (body.title) {
+        adoUpdate.title = body.title;
+      }
+      if (body.description !== undefined) {
+        adoUpdate.description = body.description;
+      }
+      if (body.state_event === 'close') {
+        adoUpdate.status = 'abandoned';
+      } else if (body.state_event === 'reopen') {
+        adoUpdate.status = 'active';
+      }
+
+      const prUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/pullrequests/${mrIid}`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const response = await fetch(prUrl, {
+        method: 'PATCH',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(adoUpdate),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: response.status,
+          },
+          response.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const adoPr = (await response.json()) as ADOPullRequest;
+      const mergeRequest = MappingService.mapPullRequestToMergeRequest(adoPr);
+
+      return c.json(mergeRequest);
+    } catch (error) {
+      console.error('Error updating merge request:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
+  // PUT /api/v4/projects/:id/merge_requests/:mr_iid/merge - Merge a merge request.
+  app.put('/api/v4/projects/:id/merge_requests/:mr_iid/merge', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+    const mrIid = c.req.param('mr_iid');
+
+    try {
+      const body = (await c.req.json().catch(() => ({}))) as {
+        merge_commit_message?: string;
+        should_remove_source_branch?: boolean;
+        squash?: boolean;
+      };
+
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Complete the PR (merge).
+      const prUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/pullrequests/${mrIid}`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      // First, get the PR to get the last merge source commit.
+      const getResponse = await fetch(prUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!getResponse.ok) {
+        const errorText = await getResponse.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: getResponse.status,
+          },
+          getResponse.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const prData = (await getResponse.json()) as ADOPullRequest & { lastMergeSourceCommit?: { commitId: string } };
+
+      // Complete the PR.
+      const completePayload: {
+        status: string;
+        lastMergeSourceCommit?: { commitId: string };
+        completionOptions?: {
+          deleteSourceBranch?: boolean;
+          mergeCommitMessage?: string;
+          squashMerge?: boolean;
+        };
+      } = {
+        status: 'completed',
+        lastMergeSourceCommit: prData.lastMergeSourceCommit,
+        completionOptions: {
+          deleteSourceBranch: body.should_remove_source_branch ?? false,
+          mergeCommitMessage: body.merge_commit_message,
+          squashMerge: body.squash ?? false,
+        },
+      };
+
+      const response = await fetch(prUrl, {
+        method: 'PATCH',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(completePayload),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: response.status,
+          },
+          response.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const adoPr = (await response.json()) as ADOPullRequest;
+      const mergeRequest = MappingService.mapPullRequestToMergeRequest(adoPr);
+
+      return c.json(mergeRequest);
+    } catch (error) {
+      console.error('Error merging merge request:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
+  // GET /api/v4/projects/:id/merge_requests/:mr_iid/changes - Get MR changes/diff.
+  app.get('/api/v4/projects/:id/merge_requests/:mr_iid/changes', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+    const mrIid = c.req.param('mr_iid');
+
+    try {
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Get PR details first.
+      const prUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/pullrequests/${mrIid}`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const prResponse = await fetch(prUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!prResponse.ok) {
+        const errorText = await prResponse.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: prResponse.status,
+          },
+          prResponse.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const adoPr = (await prResponse.json()) as ADOPullRequest;
+
+      // Get the iterations to find the diff.
+      const iterationsUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/pullrequests/${mrIid}/iterations`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const iterationsResponse = await fetch(iterationsUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      let changes: Array<{
+        old_path: string;
+        new_path: string;
+        a_mode: string;
+        b_mode: string;
+        new_file: boolean;
+        renamed_file: boolean;
+        deleted_file: boolean;
+        diff: string;
+      }> = [];
+
+      if (iterationsResponse.ok) {
+        const iterationsData = (await iterationsResponse.json()) as {
+          value: Array<{ id: number }>;
+        };
+
+        if (iterationsData.value.length > 0) {
+          const lastIteration = iterationsData.value[iterationsData.value.length - 1];
+
+          // Get changes for the last iteration.
+          const changesUrl = MappingService.buildAdoUrl(
+            ctx.config.adoBaseUrl,
+            `/_apis/git/repositories/${projectId}/pullrequests/${mrIid}/iterations/${lastIteration.id}/changes`,
+            ctx.config.adoApiVersion ?? '7.1',
+            repoInfo.projectName
+          );
+
+          const changesResponse = await fetch(changesUrl, {
+            method: 'GET',
+            headers: {
+              Authorization: ctx.adoAuthHeader,
+              'Content-Type': 'application/json',
+            },
+          });
+
+          if (changesResponse.ok) {
+            const changesData = (await changesResponse.json()) as {
+              changeEntries: Array<{
+                changeTrackingId: number;
+                changeId: number;
+                item: { path: string };
+                changeType: string;
+                originalPath?: string;
+              }>;
+            };
+
+            changes = changesData.changeEntries.map((entry) => ({
+              old_path: entry.originalPath ?? entry.item.path,
+              new_path: entry.item.path,
+              a_mode: '100644',
+              b_mode: '100644',
+              new_file: entry.changeType === 'add',
+              renamed_file: entry.changeType === 'rename',
+              deleted_file: entry.changeType === 'delete',
+              diff: '',
+            }));
+          }
+        }
+      }
+
+      // Build GitLab MR with changes response.
+      const mergeRequest = MappingService.mapPullRequestToMergeRequest(adoPr);
+
+      return c.json({
+        ...mergeRequest,
+        changes: changes,
+      });
+    } catch (error) {
+      console.error('Error fetching merge request changes:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
   // GET /api/v4/projects/:id/repository/tree - List repository tree (files and directories).
   app.get('/api/v4/projects/:id/repository/tree', async (c) => {
     const { ctx } = c.var;
@@ -795,6 +1434,235 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       return c.json(treeItems);
     } catch (error) {
       console.error('Error fetching tree:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
+  // GET /api/v4/projects/:id/repository/blobs/:sha - Get blob by SHA.
+  app.get('/api/v4/projects/:id/repository/blobs/:sha', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+    const sha = c.req.param('sha');
+
+    try {
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Get blob content.
+      const blobUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/blobs/${sha}`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const response = await fetch(blobUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          Accept: 'application/octet-stream',
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          return c.json(
+            {
+              error: 'Not Found',
+              message: `Blob '${sha}' not found`,
+              statusCode: 404,
+            },
+            404
+          );
+        }
+        const errorText = await response.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: response.status,
+          },
+          response.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      // Return raw content.
+      const buffer = await response.arrayBuffer();
+      const content = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+
+      return c.json({
+        size: buffer.byteLength,
+        encoding: 'base64',
+        content: content,
+        sha: sha,
+      });
+    } catch (error) {
+      console.error('Error fetching blob:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
+  // HEAD /api/v4/projects/:id/repository/files/:file_path - Check if file exists.
+  app.on('HEAD', '/api/v4/projects/:id/repository/files/:file_path{.+}', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+    const filePath = c.req.param('file_path');
+    const ref = c.req.query('ref') ?? 'main';
+
+    try {
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.body(null, 404);
+      }
+
+      // Check if file exists.
+      const encodedPath = encodeURIComponent(`/${filePath}`);
+      let itemPath = `/_apis/git/repositories/${projectId}/items`;
+      itemPath += `?path=${encodedPath}`;
+      itemPath += `&versionDescriptor.version=${encodeURIComponent(ref)}`;
+      itemPath += '&versionDescriptor.versionType=branch';
+
+      const itemUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        itemPath,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const response = await fetch(itemUrl, {
+        method: 'HEAD',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+        },
+      });
+
+      if (response.ok) {
+        return c.body(null, 200);
+      }
+      return c.body(null, 404);
+    } catch (error) {
+      console.error('Error checking file existence:', error);
+      return c.body(null, 500);
+    }
+  });
+
+  // GET /api/v4/projects/:id/repository/files/:file_path/raw - Get raw file content.
+  app.get('/api/v4/projects/:id/repository/files/:file_path{.+}/raw', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+    // Remove '/raw' suffix from file_path.
+    let filePath = c.req.param('file_path');
+    if (filePath.endsWith('/raw')) {
+      filePath = filePath.slice(0, -4);
+    }
+    const ref = c.req.query('ref') ?? 'main';
+
+    try {
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Build file URL for raw content.
+      const encodedPath = encodeURIComponent(`/${filePath}`);
+      let itemPath = `/_apis/git/repositories/${projectId}/items`;
+      itemPath += `?path=${encodedPath}`;
+      itemPath += `&versionDescriptor.version=${encodeURIComponent(ref)}`;
+      itemPath += '&versionDescriptor.versionType=branch';
+
+      const itemUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        itemPath,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const response = await fetch(itemUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          Accept: 'application/octet-stream',
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          return c.json(
+            {
+              error: 'Not Found',
+              message: `File '${filePath}' not found`,
+              statusCode: 404,
+            },
+            404
+          );
+        }
+        const errorText = await response.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: response.status,
+          },
+          response.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      // Return raw content.
+      const content = await response.text();
+      return c.text(content);
+    } catch (error) {
+      console.error('Error fetching raw file:', error);
       return c.json(
         {
           error: 'Internal Server Error',
@@ -1022,6 +1890,219 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       return c.json(commits);
     } catch (error) {
       console.error('Error fetching commits:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
+  // GET /api/v4/projects/:id/repository/commits/:sha - Get single commit.
+  app.get('/api/v4/projects/:id/repository/commits/:sha', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+    const sha = c.req.param('sha');
+
+    try {
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Get single commit.
+      const commitUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/commits/${sha}`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const response = await fetch(commitUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          return c.json(
+            {
+              error: 'Not Found',
+              message: `Commit '${sha}' not found`,
+              statusCode: 404,
+            },
+            404
+          );
+        }
+        const errorText = await response.text();
+        return c.json(
+          {
+            error: 'ADO API Error',
+            message: errorText,
+            statusCode: response.status,
+          },
+          response.status as 400 | 401 | 403 | 404 | 500
+        );
+      }
+
+      const adoCommit = (await response.json()) as ADOCommit;
+      const commit = MappingService.mapCommitToGitLabCommit(adoCommit);
+
+      return c.json(commit);
+    } catch (error) {
+      console.error('Error fetching commit:', error);
+      return c.json(
+        {
+          error: 'Internal Server Error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+          statusCode: 500,
+        },
+        500
+      );
+    }
+  });
+
+  // GET /api/v4/projects/:id/repository/compare - Compare branches/commits.
+  app.get('/api/v4/projects/:id/repository/compare', async (c) => {
+    const { ctx } = c.var;
+    const projectId = c.req.param('id');
+    const from = c.req.query('from');
+    const to = c.req.query('to');
+
+    if (!from || !to) {
+      return c.json(
+        {
+          error: 'Bad Request',
+          message: 'from and to query parameters are required',
+          statusCode: 400,
+        },
+        400
+      );
+    }
+
+    try {
+      // Get repository info.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
+      // Get commits between the two refs.
+      const commitsUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/commitsbatch`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const commitsResponse = await fetch(commitsUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          itemVersion: { version: to, versionType: 'branch' },
+          compareVersion: { version: from, versionType: 'branch' },
+        }),
+      });
+
+      let commits: Array<ReturnType<typeof MappingService.mapCommitToGitLabCommit>> = [];
+      if (commitsResponse.ok) {
+        const commitsData = (await commitsResponse.json()) as { value: ADOCommit[] };
+        commits = commitsData.value.map((c) => MappingService.mapCommitToGitLabCommit(c));
+      }
+
+      // Get diff between the two refs.
+      const diffUrl = MappingService.buildAdoUrl(
+        ctx.config.adoBaseUrl,
+        `/_apis/git/repositories/${projectId}/diffs/commits?baseVersion=${encodeURIComponent(from)}&baseVersionType=branch&targetVersion=${encodeURIComponent(to)}&targetVersionType=branch`,
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
+      );
+
+      const diffResponse = await fetch(diffUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: ctx.adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      let diffs: Array<{
+        old_path: string;
+        new_path: string;
+        a_mode: string;
+        b_mode: string;
+        new_file: boolean;
+        renamed_file: boolean;
+        deleted_file: boolean;
+        diff: string;
+      }> = [];
+
+      if (diffResponse.ok) {
+        const diffData = (await diffResponse.json()) as {
+          changes: Array<{
+            item: { path: string };
+            changeType: string;
+            sourceServerItem?: string;
+          }>;
+        };
+
+        diffs = diffData.changes.map((change) => ({
+          old_path: change.sourceServerItem ?? change.item.path,
+          new_path: change.item.path,
+          a_mode: '100644',
+          b_mode: '100644',
+          new_file: change.changeType === 'add',
+          renamed_file: change.changeType === 'rename',
+          deleted_file: change.changeType === 'delete',
+          diff: '',
+        }));
+      }
+
+      return c.json({
+        commit: commits.length > 0 ? commits[0] : null,
+        commits: commits,
+        diffs: diffs,
+        compare_timeout: false,
+        compare_same_ref: from === to,
+      });
+    } catch (error) {
+      console.error('Error comparing refs:', error);
       return c.json(
         {
           error: 'Internal Server Error',

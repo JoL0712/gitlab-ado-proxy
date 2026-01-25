@@ -30,20 +30,27 @@ A cloud-agnostic middleware that emulates GitLab's REST API and proxies requests
 |------------|------------------|-------------|
 | `GET /api/v4/projects/:id/repository/branches` | `GET /_apis/git/repositories/:id/refs?filter=heads` | List branches |
 | `GET /api/v4/projects/:id/repository/branches/:branch` | `GET /_apis/git/repositories/:id/refs?filter=heads/:branch` | Get single branch |
+| `POST /api/v4/projects/:id/repository/branches` | `POST /_apis/git/repositories/:id/refs` | Create branch |
+| `DELETE /api/v4/projects/:id/repository/branches/:branch` | `POST /_apis/git/repositories/:id/refs` | Delete branch |
 
 ### Files & Tree
 
 | GitLab API | Azure DevOps API | Description |
 |------------|------------------|-------------|
 | `GET /api/v4/projects/:id/repository/tree` | `GET /_apis/git/repositories/:id/items` | List files and directories |
-| `GET /api/v4/projects/:id/repository/files/:path` | `GET /_apis/git/repositories/:id/items?path=` | Get file content |
+| `GET /api/v4/projects/:id/repository/files/:path` | `GET /_apis/git/repositories/:id/items?path=` | Get file content (base64) |
+| `GET /api/v4/projects/:id/repository/files/:path/raw` | `GET /_apis/git/repositories/:id/items?path=` | Get raw file content |
+| `HEAD /api/v4/projects/:id/repository/files/:path` | `HEAD /_apis/git/repositories/:id/items?path=` | Check if file exists |
+| `GET /api/v4/projects/:id/repository/blobs/:sha` | `GET /_apis/git/repositories/:id/blobs/:sha` | Get blob by SHA |
 
 ### Commits
 
 | GitLab API | Azure DevOps API | Description |
 |------------|------------------|-------------|
 | `GET /api/v4/projects/:id/repository/commits` | `GET /_apis/git/repositories/:id/commits` | List commits |
+| `GET /api/v4/projects/:id/repository/commits/:sha` | `GET /_apis/git/repositories/:id/commits/:sha` | Get single commit |
 | `POST /api/v4/projects/:id/repository/commits` | `POST /_apis/git/repositories/:id/pushes` | Create commit(s) |
+| `GET /api/v4/projects/:id/repository/compare` | `POST /_apis/git/repositories/:id/commitsbatch` | Compare branches/commits |
 
 ### Merge Requests (Pull Requests)
 
@@ -52,6 +59,9 @@ A cloud-agnostic middleware that emulates GitLab's REST API and proxies requests
 | `POST /api/v4/projects/:id/merge_requests` | `POST /_apis/git/repositories/:id/pullrequests` | Create merge request |
 | `GET /api/v4/projects/:id/merge_requests` | `GET /_apis/git/repositories/:id/pullrequests` | List merge requests |
 | `GET /api/v4/projects/:id/merge_requests/:iid` | `GET /_apis/git/repositories/:id/pullrequests/:id` | Get single merge request |
+| `PUT /api/v4/projects/:id/merge_requests/:iid` | `PATCH /_apis/git/repositories/:id/pullrequests/:id` | Update merge request |
+| `PUT /api/v4/projects/:id/merge_requests/:iid/merge` | `PATCH /_apis/git/repositories/:id/pullrequests/:id` | Merge a merge request |
+| `GET /api/v4/projects/:id/merge_requests/:iid/changes` | `GET /_apis/git/repositories/:id/pullrequests/:id/iterations` | Get MR changes/diff |
 
 ## Architecture
 
