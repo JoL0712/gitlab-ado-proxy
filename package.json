@@ -1,0 +1,29 @@
+{
+  "name": "gitlab-ado-proxy",
+  "version": "1.0.0",
+  "description": "Cloud-agnostic middleware that emulates GitLab REST API and proxies to Azure DevOps",
+  "type": "module",
+  "main": "dist/adapters/nodejs.js",
+  "scripts": {
+    "dev": "tsx watch src/adapters/nodejs.ts",
+    "build": "tsc && node scripts/bundle.js",
+    "build:lambda": "node scripts/bundle.js",
+    "start": "node dist/adapters/nodejs.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "hono": "^4.11.0"
+  },
+  "devDependencies": {
+    "@hono/node-server": "^1.13.0",
+    "@types/aws-lambda": "^8.10.145",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
