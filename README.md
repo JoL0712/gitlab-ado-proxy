@@ -68,7 +68,9 @@ A cloud-agnostic middleware that emulates GitLab's REST API and proxies requests
 | GitLab API | Description |
 |------------|-------------|
 | `GET /api/v4/projects/:id/access_tokens` | List project access tokens |
+| `GET /api/v4/projects/:id/access_tokens/:token_id` | Get details on a project access token |
 | `POST /api/v4/projects/:id/access_tokens` | Create project access token (issues proxy-managed `glpat-*` token) |
+| `POST /api/v4/projects/:id/access_tokens/:token_id/rotate` | Rotate project access token (supports `self` keyword) |
 | `DELETE /api/v4/projects/:id/access_tokens/:token_id` | Revoke project access token |
 
 ### OAuth 2.0 Endpoints
