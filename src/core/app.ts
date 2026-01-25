@@ -59,8 +59,10 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
   /**
    * Helper function to fetch repository info and extract project name.
-   * This allows us to use project-level URLs even when we only have the repository GUID or name.
-   * Supports both repository GUIDs (works at org level) and repository names (requires search).
+   * Supports multiple identifier formats:
+   * - Repository GUID (e.g., "d1567dcd-066c-4a96-897a-20860d99a3c0")
+   * - Repository name only (e.g., "my-repo")
+   * - GitLab-style path (e.g., "ProjectName/RepoName" or "Project%20Name/repo-name")
    * Also enforces project access restrictions if allowedProjects is configured.
    */
   async function fetchRepositoryInfo(
@@ -71,7 +73,74 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     allowedProjects?: string[]
   ): Promise<{ repo: ADORepository; projectName: string } | null> {
     try {
-      // First, try to get repository at organization level (works for GUIDs).
+      // URL-decode the repositoryId in case it contains encoded characters.
+      const decodedId = decodeURIComponent(repositoryId);
+      
+      console.log('[fetchRepositoryInfo] Looking up repository:', {
+        originalId: repositoryId,
+        decodedId,
+        hasSlash: decodedId.includes('/'),
+      });
+
+      // Check if this is a GitLab-style path (project/repo format).
+      if (decodedId.includes('/')) {
+        const slashIndex = decodedId.lastIndexOf('/');
+        const projectName = decodedId.substring(0, slashIndex);
+        const repoName = decodedId.substring(slashIndex + 1);
+
+        console.log('[fetchRepositoryInfo] Parsed as project/repo path:', {
+          projectName,
+          repoName,
+        });
+
+        // Check if project is in allowed list.
+        if (allowedProjects && allowedProjects.length > 0) {
+          const allowedLower = allowedProjects.map((p) => p.toLowerCase());
+          if (!allowedLower.includes(projectName.toLowerCase())) {
+            console.warn('[fetchRepositoryInfo] Project not in allowed list:', {
+              projectName,
+              allowedProjects,
+            });
+            return null;
+          }
+        }
+
+        // Fetch repository directly using project-level API.
+        const repoUrl = MappingService.buildAdoUrl(
+          adoBaseUrl,
+          `/${encodeURIComponent(projectName)}/_apis/git/repositories/${encodeURIComponent(repoName)}`,
+          adoApiVersion
+        );
+
+        console.log('[fetchRepositoryInfo] Fetching from project-level URL:', { url: repoUrl });
+
+        const response = await fetch(repoUrl, {
+          method: 'GET',
+          headers: {
+            Authorization: adoAuthHeader,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (response.ok) {
+          const repo = (await response.json()) as ADORepository;
+          console.log('[fetchRepositoryInfo] Found repository via project path:', {
+            repoId: repo.id,
+            repoName: repo.name,
+            projectName: repo.project.name,
+          });
+          return { repo, projectName: repo.project.name };
+        }
+
+        const errorText = await response.text();
+        console.warn('[fetchRepositoryInfo] Failed to fetch via project path:', {
+          status: response.status,
+          error: errorText.substring(0, 200),
+        });
+        return null;
+      }
+
+      // Try to get repository at organization level (works for GUIDs).
       const repoUrl = MappingService.buildAdoUrl(
         adoBaseUrl,
         `/_apis/git/repositories/${repositoryId}`,
@@ -106,10 +175,41 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       }
 
       // If it failed with "project name required", it's likely a repository name, not a GUID.
-      // Try to search for it across all repositories in the organization.
+      // Try to search for it across all repositories.
       const errorText = await response.text();
       if (errorText.includes('project name is required')) {
-        // List all repositories in the organization and find the one with matching name.
+        console.log('[fetchRepositoryInfo] Searching for repo by name:', { repositoryId });
+
+        // If we have allowed projects, search only within those projects.
+        if (allowedProjects && allowedProjects.length > 0) {
+          for (const projectName of allowedProjects) {
+            const projectRepoUrl = MappingService.buildAdoUrl(
+              adoBaseUrl,
+              `/${encodeURIComponent(projectName)}/_apis/git/repositories/${encodeURIComponent(repositoryId)}`,
+              adoApiVersion
+            );
+
+            const projectResponse = await fetch(projectRepoUrl, {
+              method: 'GET',
+              headers: {
+                Authorization: adoAuthHeader,
+                'Content-Type': 'application/json',
+              },
+            });
+
+            if (projectResponse.ok) {
+              const repo = (await projectResponse.json()) as ADORepository;
+              console.log('[fetchRepositoryInfo] Found repo in allowed project:', {
+                repoName: repo.name,
+                projectName: repo.project.name,
+              });
+              return { repo, projectName: repo.project.name };
+            }
+          }
+          return null;
+        }
+
+        // No allowed projects restriction - list all repositories.
         const listUrl = MappingService.buildAdoUrl(
           adoBaseUrl,
           '/_apis/git/repositories',
@@ -126,15 +226,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
         if (listResponse.ok) {
           const reposData = (await listResponse.json()) as { value: ADORepository[] };
-          
-          // Filter by allowed projects if configured.
-          let repos = reposData.value;
-          if (allowedProjects && allowedProjects.length > 0) {
-            const allowedLower = allowedProjects.map((p) => p.toLowerCase());
-            repos = repos.filter((r) => allowedLower.includes(r.project.name.toLowerCase()));
-          }
-
-          const matchingRepo = repos.find(
+          const matchingRepo = reposData.value.find(
             (r) => r.name.toLowerCase() === repositoryId.toLowerCase() || r.id === repositoryId
           );
 
@@ -146,7 +238,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
       return null;
     } catch (error) {
-      console.error('Error fetching repository info:', error);
+      console.error('[fetchRepositoryInfo] Error:', error);
       return null;
     }
   }
