@@ -3330,6 +3330,33 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     });
   });
 
+  // GET /api/v4/application/settings - Application settings (minimal response).
+  app.get('/api/v4/application/settings', (c) => {
+    console.log('[GET /api/v4/application/settings] Returning minimal settings');
+    return c.json({
+      default_branch_name: 'main',
+      repository_access_level: 'enabled',
+    });
+  });
+
+  // GET /api/v4/groups - List groups (return empty array as ADO doesn't have same concept).
+  app.get('/api/v4/groups', (c) => {
+    console.log('[GET /api/v4/groups] Returning empty groups list');
+    return c.json([]);
+  });
+
+  // GET /api/v4/namespaces - List namespaces (return minimal response).
+  app.get('/api/v4/namespaces', (c) => {
+    console.log('[GET /api/v4/namespaces] Returning minimal namespaces');
+    return c.json([]);
+  });
+
+  // GET /api/v4/features - List feature flags (return empty).
+  app.get('/api/v4/features', (c) => {
+    console.log('[GET /api/v4/features] Returning empty features list');
+    return c.json([]);
+  });
+
   // Catch-all for unsupported endpoints.
   // This helps debug what endpoints Cursor is calling that we haven't implemented.
   app.all('/api/v4/*', (c) => {
