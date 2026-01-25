@@ -5,8 +5,8 @@
 # Required Configuration
 ###############################################################################
 
-# Azure DevOps organization and project URL.
-ado_base_url = "https://dev.azure.com/your-org/your-project"
+# Azure DevOps organization URL (project-agnostic).
+ado_base_url = "https://dev.azure.com/your-org"
 
 ###############################################################################
 # Optional Configuration

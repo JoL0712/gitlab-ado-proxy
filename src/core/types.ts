@@ -192,7 +192,8 @@ export interface ADOCommit {
  * Proxy Configuration.
  */
 export interface ProxyConfig {
-  // Base URL for Azure DevOps (e.g., https://dev.azure.com/org/project).
+  // Base URL for Azure DevOps organization (e.g., https://dev.azure.com/org).
+  // The proxy is project-agnostic and uses repository GUIDs to access repositories across all projects.
   adoBaseUrl: string;
   // Optional: Override the API version.
   adoApiVersion?: string;

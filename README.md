@@ -60,7 +60,7 @@ npm install
 1. Set environment variables:
 
 ```bash
-export ADO_BASE_URL="https://dev.azure.com/your-org/your-project"
+export ADO_BASE_URL="https://dev.azure.com/your-org"
 export ADO_API_VERSION="7.1"
 ```
 
@@ -107,7 +107,7 @@ cp terraform.tfvars.example terraform.tfvars
 Edit `terraform.tfvars`:
 
 ```hcl
-ado_base_url = "https://dev.azure.com/your-org/your-project"
+ado_base_url = "https://dev.azure.com/your-org"
 aws_region   = "us-east-1"
 environment  = "prod"
 ```
@@ -140,7 +140,7 @@ Use your Azure DevOps PAT as the GitLab private token.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ADO_BASE_URL` | Azure DevOps organization/project URL | Required |
+| `ADO_BASE_URL` | Azure DevOps organization URL (project-agnostic) | Required |
 | `ADO_API_VERSION` | Azure DevOps API version | `7.1` |
 | `PORT` | Local server port (Node.js only) | `3000` |
 

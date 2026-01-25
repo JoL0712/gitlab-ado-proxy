@@ -8,7 +8,7 @@ import { createApp } from '../core/app.js';
 
 // Read configuration from environment variables.
 const config = {
-  adoBaseUrl: process.env.ADO_BASE_URL ?? 'https://dev.azure.com/org/project',
+  adoBaseUrl: process.env.ADO_BASE_URL ?? 'https://dev.azure.com/org',
   adoApiVersion: process.env.ADO_API_VERSION ?? '7.1',
 };
 

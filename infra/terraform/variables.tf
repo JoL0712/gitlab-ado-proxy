@@ -3,7 +3,7 @@
 ###############################################################################
 
 variable "ado_base_url" {
-  description = "Azure DevOps base URL (e.g., https://dev.azure.com/org/project)"
+  description = "Azure DevOps organization URL (e.g., https://dev.azure.com/org). The proxy is project-agnostic and uses repository GUIDs."
   type        = string
 
   validation {

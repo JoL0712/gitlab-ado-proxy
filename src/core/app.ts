@@ -27,6 +27,76 @@ export function createApp(config: ProxyConfig): Hono<Env> {
   // Middleware: Logger.
   app.use('*', logger());
 
+  /**
+   * Helper function to fetch repository info and extract project name.
+   * This allows us to use project-level URLs even when we only have the repository GUID or name.
+   * Supports both repository GUIDs (works at org level) and repository names (requires search).
+   */
+  async function fetchRepositoryInfo(
+    repositoryId: string,
+    adoAuthHeader: string,
+    adoBaseUrl: string,
+    adoApiVersion: string
+  ): Promise<{ repo: ADORepository; projectName: string } | null> {
+    try {
+      // First, try to get repository at organization level (works for GUIDs).
+      const repoUrl = MappingService.buildAdoUrl(
+        adoBaseUrl,
+        `/_apis/git/repositories/${repositoryId}`,
+        adoApiVersion
+      );
+
+      const response = await fetch(repoUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        const repo = (await response.json()) as ADORepository;
+        return { repo, projectName: repo.project.name };
+      }
+
+      // If it failed with "project name required", it's likely a repository name, not a GUID.
+      // Try to search for it across all repositories in the organization.
+      const errorText = await response.text();
+      if (errorText.includes('project name is required')) {
+        // List all repositories in the organization and find the one with matching name.
+        const listUrl = MappingService.buildAdoUrl(
+          adoBaseUrl,
+          '/_apis/git/repositories',
+          adoApiVersion
+        );
+
+        const listResponse = await fetch(listUrl, {
+          method: 'GET',
+          headers: {
+            Authorization: adoAuthHeader,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (listResponse.ok) {
+          const reposData = (await listResponse.json()) as { value: ADORepository[] };
+          const matchingRepo = reposData.value.find(
+            (r) => r.name.toLowerCase() === repositoryId.toLowerCase() || r.id === repositoryId
+          );
+
+          if (matchingRepo) {
+            return { repo: matchingRepo, projectName: matchingRepo.project.name };
+          }
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error fetching repository info:', error);
+      return null;
+    }
+  }
+
   // Middleware: Auth conversion and context setup.
   app.use('/api/v4/*', async (c, next) => {
     const gitlabToken = c.req.header('PRIVATE-TOKEN');
@@ -65,35 +135,26 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     const projectId = c.req.param('id');
 
     try {
-      const adoUrl = MappingService.buildAdoUrl(
+      // Use the helper function to fetch repository info (handles both GUIDs and names).
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}`,
-        ctx.config.adoApiVersion
+        ctx.config.adoApiVersion ?? '7.1'
       );
 
-      const response = await fetch(adoUrl, {
-        method: 'GET',
-        headers: {
-          Authorization: ctx.adoAuthHeader,
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
+      if (!repoInfo) {
         return c.json(
           {
-            error: 'ADO API Error',
-            message: errorText,
-            statusCode: response.status,
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
           },
-          response.status as 400 | 401 | 403 | 404 | 500
+          404
         );
       }
 
-      const adoRepo = (await response.json()) as ADORepository;
-      const gitlabProject = MappingService.mapRepositoryToProject(adoRepo);
-
+      const gitlabProject = MappingService.mapRepositoryToProject(repoInfo.repo);
       return c.json(gitlabProject);
     } catch (error) {
       console.error('Error fetching project:', error);
@@ -114,32 +175,34 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     const projectId = c.req.param('id');
 
     try {
-      // First, get repository info to know the default branch.
-      const repoUrl = MappingService.buildAdoUrl(
+      // First, get repository info to know the default branch and project name.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}`,
-        ctx.config.adoApiVersion
+        ctx.config.adoApiVersion ?? '7.1'
       );
 
-      const repoResponse = await fetch(repoUrl, {
-        method: 'GET',
-        headers: {
-          Authorization: ctx.adoAuthHeader,
-          'Content-Type': 'application/json',
-        },
-      });
-
-      let defaultBranch = 'main';
-      if (repoResponse.ok) {
-        const repo = (await repoResponse.json()) as ADORepository;
-        defaultBranch = repo.defaultBranch ?? 'refs/heads/main';
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
       }
 
-      // Get branches (refs with heads filter).
+      const { repo, projectName } = repoInfo;
+      const defaultBranch = repo.defaultBranch ?? 'refs/heads/main';
+
+      // Get branches (refs with heads filter) using project-level URL.
       const refsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${projectId}/refs?filter=heads`,
-        ctx.config.adoApiVersion
+        ctx.config.adoApiVersion ?? '7.1',
+        projectName
       );
 
       const response = await fetch(refsUrl, {
@@ -188,32 +251,34 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     const branchName = c.req.param('branch');
 
     try {
-      // Get repository info for default branch.
-      const repoUrl = MappingService.buildAdoUrl(
+      // Get repository info for default branch and project name.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        `/_apis/git/repositories/${projectId}`,
-        ctx.config.adoApiVersion
+        ctx.config.adoApiVersion ?? '7.1'
       );
 
-      const repoResponse = await fetch(repoUrl, {
-        method: 'GET',
-        headers: {
-          Authorization: ctx.adoAuthHeader,
-          'Content-Type': 'application/json',
-        },
-      });
-
-      let defaultBranch = 'main';
-      if (repoResponse.ok) {
-        const repo = (await repoResponse.json()) as ADORepository;
-        defaultBranch = repo.defaultBranch ?? 'refs/heads/main';
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
       }
 
-      // Get specific branch ref.
+      const { repo, projectName } = repoInfo;
+      const defaultBranch = repo.defaultBranch ?? 'refs/heads/main';
+
+      // Get specific branch ref using project-level URL.
       const refUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${projectId}/refs?filter=heads/${branchName}`,
-        ctx.config.adoApiVersion
+        ctx.config.adoApiVersion ?? '7.1',
+        projectName
       );
 
       const response = await fetch(refUrl, {
@@ -284,13 +349,33 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         );
       }
 
+      // Get repository info to extract project name.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
       // Convert to ADO format.
       const prCreate = MappingService.mapMergeRequestCreateToPullRequestCreate(mrCreate);
 
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${projectId}/pullrequests`,
-        ctx.config.adoApiVersion
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
       );
 
       const response = await fetch(prUrl, {
@@ -348,6 +433,25 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     }
 
     try {
+      // Get repository info to extract project name.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
       let prPath = `/_apis/git/repositories/${projectId}/pullrequests`;
       if (adoStatus) {
         prPath += `?searchCriteria.status=${adoStatus}`;
@@ -356,7 +460,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         prPath,
-        ctx.config.adoApiVersion
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
       );
 
       const response = await fetch(prUrl, {
@@ -405,10 +510,30 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     const mrIid = c.req.param('mr_iid');
 
     try {
+      // Get repository info to extract project name.
+      const repoInfo = await fetchRepositoryInfo(
+        projectId,
+        ctx.adoAuthHeader,
+        ctx.config.adoBaseUrl,
+        ctx.config.adoApiVersion ?? '7.1'
+      );
+
+      if (!repoInfo) {
+        return c.json(
+          {
+            error: 'Not Found',
+            message: `Repository '${projectId}' not found`,
+            statusCode: 404,
+          },
+          404
+        );
+      }
+
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${projectId}/pullrequests/${mrIid}`,
-        ctx.config.adoApiVersion
+        ctx.config.adoApiVersion ?? '7.1',
+        repoInfo.projectName
       );
 
       const response = await fetch(prUrl, {
@@ -465,6 +590,6 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
 // Export a default app instance for simple usage.
 export const app = createApp({
-  adoBaseUrl: process.env.ADO_BASE_URL ?? 'https://dev.azure.com/org/project',
+  adoBaseUrl: process.env.ADO_BASE_URL ?? 'https://dev.azure.com/org',
   adoApiVersion: process.env.ADO_API_VERSION ?? '7.1',
 });

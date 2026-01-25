@@ -144,18 +144,32 @@ export class MappingService {
 
   /**
    * Build ADO API URL from base URL and path.
+   * If projectName is provided, uses project-level URL format.
+   * Otherwise, uses organization-level URL format.
    */
   static buildAdoUrl(
     baseUrl: string,
     path: string,
-    apiVersion: string = '7.1'
+    apiVersion: string = '7.1',
+    projectName?: string
   ): string {
     // Ensure base URL doesn't have trailing slash.
     const base = baseUrl.replace(/\/$/, '');
     // Ensure path starts with slash.
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    
+    // If project name is provided, insert it into the URL path.
+    let fullUrl: string;
+    if (projectName) {
+      // Insert project name after organization: https://dev.azure.com/org/project/_apis/...
+      fullUrl = `${base}/${projectName}${normalizedPath}`;
+    } else {
+      // Organization-level: https://dev.azure.com/org/_apis/...
+      fullUrl = `${base}${normalizedPath}`;
+    }
+    
     // Add api-version query parameter.
     const separator = normalizedPath.includes('?') ? '&' : '?';
-    return `${base}${normalizedPath}${separator}api-version=${apiVersion}`;
+    return `${fullUrl}${separator}api-version=${apiVersion}`;
   }
 }
