@@ -561,88 +561,142 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       archived,
       page,
       pagination,
+      allowedProjects: ctx.config.allowedProjects ?? 'all',
       queryString: c.req.url.split('?')[1] || '',
     });
 
     try {
-      // List all repositories in the organization.
-      const reposUrl = MappingService.buildAdoUrl(
-        ctx.config.adoBaseUrl,
-        '/_apis/git/repositories',
-        ctx.config.adoApiVersion ?? '7.1'
-      );
+      let repos: ADORepository[] = [];
 
-      const response = await fetch(reposUrl, {
-        method: 'GET',
-        headers: {
-          Authorization: ctx.adoAuthHeader,
-          'Content-Type': 'application/json',
-        },
-      });
-
-      // Check content type before processing.
-      const contentType = response.headers.get('Content-Type') ?? '';
-      const isJson = contentType.includes('application/json') || contentType.includes('text/json');
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('[GET /api/v4/projects] ADO API error:', {
-          status: response.status,
-          statusText: response.statusText,
-          contentType,
-          isJson,
-          error: isJson ? errorText : errorText.substring(0, 500),
-          url: reposUrl,
-        });
-        return c.json(
-          {
-            error: 'ADO API Error',
-            message: isJson ? errorText : `Received ${contentType} instead of JSON. This may indicate an authentication or endpoint issue.`,
-            statusCode: response.status,
-          },
-          response.status as 400 | 401 | 403 | 404 | 500
-        );
-      }
-
-      // Check if response is actually JSON before parsing.
-      if (!isJson) {
-        const responseText = await response.text();
-        console.error('[GET /api/v4/projects] Non-JSON response received:', {
-          contentType,
-          status: response.status,
-          responsePreview: responseText.substring(0, 500),
-          url: reposUrl,
-        });
-        return c.json(
-          {
-            error: 'ADO API Error',
-            message: `Expected JSON but received ${contentType}. This may indicate an authentication or endpoint issue.`,
-            statusCode: response.status,
-          },
-          response.status as 400 | 401 | 403 | 404 | 500
-        );
-      }
-
-      const data = (await response.json()) as { value: ADORepository[]; count: number };
-      
-      console.log('[GET /api/v4/projects] ADO API response:', {
-        totalRepos: data.count,
-        returnedRepos: data.value.length,
-        firstRepo: data.value[0]?.name,
-        allowedProjects: ctx.config.allowedProjects ?? 'all',
-      });
-      
-      let repos = data.value;
-
-      // Filter by allowed projects if configured.
+      // If allowed projects are configured, fetch repos only from those projects.
+      // This is more efficient than fetching all repos and filtering.
       if (ctx.config.allowedProjects && ctx.config.allowedProjects.length > 0) {
-        const allowedLower = ctx.config.allowedProjects.map((p) => p.toLowerCase());
-        const beforeFilter = repos.length;
-        repos = repos.filter((r) => allowedLower.includes(r.project.name.toLowerCase()));
-        console.log('[GET /api/v4/projects] After allowed projects filter:', {
-          before: beforeFilter,
-          after: repos.length,
+        console.log('[GET /api/v4/projects] Fetching repos from allowed projects only:', {
           allowedProjects: ctx.config.allowedProjects,
+        });
+
+        // Fetch repositories from each allowed project in parallel.
+        const projectFetches = ctx.config.allowedProjects.map(async (projectName) => {
+          const reposUrl = MappingService.buildAdoUrl(
+            ctx.config.adoBaseUrl,
+            `/${encodeURIComponent(projectName)}/_apis/git/repositories`,
+            ctx.config.adoApiVersion ?? '7.1'
+          );
+
+          try {
+            const response = await fetch(reposUrl, {
+              method: 'GET',
+              headers: {
+                Authorization: ctx.adoAuthHeader,
+                'Content-Type': 'application/json',
+              },
+            });
+
+            if (!response.ok) {
+              console.warn('[GET /api/v4/projects] Failed to fetch repos for project:', {
+                project: projectName,
+                status: response.status,
+              });
+              return [];
+            }
+
+            const contentType = response.headers.get('Content-Type') ?? '';
+            if (!contentType.includes('application/json')) {
+              console.warn('[GET /api/v4/projects] Non-JSON response for project:', {
+                project: projectName,
+                contentType,
+              });
+              return [];
+            }
+
+            const data = (await response.json()) as { value: ADORepository[]; count: number };
+            console.log('[GET /api/v4/projects] Fetched repos for project:', {
+              project: projectName,
+              count: data.value?.length ?? 0,
+            });
+            return data.value ?? [];
+          } catch (error) {
+            console.error('[GET /api/v4/projects] Error fetching repos for project:', {
+              project: projectName,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return [];
+          }
+        });
+
+        const projectResults = await Promise.all(projectFetches);
+        repos = projectResults.flat();
+
+        console.log('[GET /api/v4/projects] Combined repos from allowed projects:', {
+          totalRepos: repos.length,
+          projectsCounted: ctx.config.allowedProjects.length,
+        });
+      } else {
+        // No project restrictions - fetch all repositories in the organization.
+        const reposUrl = MappingService.buildAdoUrl(
+          ctx.config.adoBaseUrl,
+          '/_apis/git/repositories',
+          ctx.config.adoApiVersion ?? '7.1'
+        );
+
+        const response = await fetch(reposUrl, {
+          method: 'GET',
+          headers: {
+            Authorization: ctx.adoAuthHeader,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        // Check content type before processing.
+        const contentType = response.headers.get('Content-Type') ?? '';
+        const isJson = contentType.includes('application/json') || contentType.includes('text/json');
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('[GET /api/v4/projects] ADO API error:', {
+            status: response.status,
+            statusText: response.statusText,
+            contentType,
+            isJson,
+            error: isJson ? errorText : errorText.substring(0, 500),
+            url: reposUrl,
+          });
+          return c.json(
+            {
+              error: 'ADO API Error',
+              message: isJson ? errorText : `Received ${contentType} instead of JSON. This may indicate an authentication or endpoint issue.`,
+              statusCode: response.status,
+            },
+            response.status as 400 | 401 | 403 | 404 | 500
+          );
+        }
+
+        // Check if response is actually JSON before parsing.
+        if (!isJson) {
+          const responseText = await response.text();
+          console.error('[GET /api/v4/projects] Non-JSON response received:', {
+            contentType,
+            status: response.status,
+            responsePreview: responseText.substring(0, 500),
+            url: reposUrl,
+          });
+          return c.json(
+            {
+              error: 'ADO API Error',
+              message: `Expected JSON but received ${contentType}. This may indicate an authentication or endpoint issue.`,
+              statusCode: response.status,
+            },
+            response.status as 400 | 401 | 403 | 404 | 500
+          );
+        }
+
+        const data = (await response.json()) as { value: ADORepository[]; count: number };
+        repos = data.value;
+
+        console.log('[GET /api/v4/projects] ADO API response:', {
+          totalRepos: data.count,
+          returnedRepos: repos.length,
+          firstRepo: repos[0]?.name,
         });
       }
 
