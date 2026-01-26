@@ -4,8 +4,7 @@
  */
 
 import type { KVStorage, StorageConfig } from './types.js';
-import { MemoryStorage } from './memory.js';
-import { FileStorage } from './file.js';
+import { LevelStorage } from './level.js';
 import { DynamoDBStorage } from './dynamodb.js';
 
 // Singleton storage instance.
@@ -16,12 +15,9 @@ let storageInstance: KVStorage | null = null;
  */
 export function createStorage(config: StorageConfig): KVStorage {
   switch (config.type) {
-    case 'memory':
-      return new MemoryStorage(config.keyPrefix);
-
-    case 'file':
-      return new FileStorage({
-        filePath: config.filePath,
+    case 'level':
+      return new LevelStorage({
+        location: config.levelLocation,
         keyPrefix: config.keyPrefix,
       });
 
@@ -35,9 +31,6 @@ export function createStorage(config: StorageConfig): KVStorage {
         keyPrefix: config.keyPrefix,
       });
 
-    case 'redis':
-      throw new Error('Redis storage adapter not yet implemented');
-
     default:
       throw new Error(`Unknown storage type: ${config.type}`);
   }
@@ -45,17 +38,16 @@ export function createStorage(config: StorageConfig): KVStorage {
 
 /**
  * Get storage configuration from environment variables.
- * Defaults to file-backed storage for local development so data survives restarts.
+ * Defaults to Level (LevelDB) for local development so data survives restarts.
  */
 export function getStorageConfigFromEnv(): StorageConfig {
-  const type = (process.env.STORAGE_TYPE as StorageConfig['type']) ?? 'file';
+  const type = (process.env.STORAGE_TYPE as StorageConfig['type']) ?? 'level';
 
   return {
     type,
-    filePath: process.env.STORAGE_FILE_PATH ?? '.data/storage.json',
+    levelLocation: process.env.STORAGE_LEVEL_LOCATION ?? '.data/level',
     tableName: process.env.STORAGE_TABLE_NAME ?? process.env.DYNAMODB_TABLE_NAME,
     region: process.env.AWS_REGION ?? process.env.STORAGE_REGION,
-    redisUrl: process.env.REDIS_URL ?? process.env.STORAGE_REDIS_URL,
     keyPrefix: process.env.STORAGE_KEY_PREFIX ?? 'gitlab-ado-proxy',
   };
 }

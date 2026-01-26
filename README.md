@@ -7,7 +7,7 @@ A cloud-agnostic middleware that emulates GitLab's REST API and proxies requests
 - **GitLab API Emulation**: Implements GitLab REST API endpoints that proxy to equivalent Azure DevOps APIs.
 - **Multi-Runtime Support**: Run as a long-running Node.js server (production or local), or deploy to AWS Lambda (serverless).
 - **Cloud-Agnostic Core**: The core logic is platform-agnostic, using only standard Web APIs.
-- **Multi-Storage**: Supports in-memory, file-backed, or DynamoDB storage for tokens and sessions.
+- **Multi-Storage**: Supports Level (LevelDB, default) or DynamoDB storage for tokens and sessions.
 
 ## Supported Endpoints
 
@@ -113,9 +113,8 @@ src/
 │   ├── index.ts         # Core exports
 │   └── storage/         # Key-value storage abstraction
 │       ├── types.ts     # Storage interface and types
-│       ├── memory.ts    # In-memory adapter (ephemeral)
-│       ├── file.ts      # File-backed adapter (local dev, persists across restarts)
-│       ├── dynamodb.ts  # DynamoDB adapter (AWS Lambda)
+│       ├── level.ts     # LevelDB adapter (default, local KV, prefix scans)
+│       ├── dynamodb.ts  # DynamoDB adapter (AWS Lambda/production)
 │       ├── factory.ts   # Storage factory
 │       └── index.ts     # Storage exports
 ├── adapters/            # Runtime-specific entry points
@@ -208,7 +207,7 @@ npm run start
 - **`npm run start:dev`** runs `dist/adapters/local.js`: same app as local dev (localhost-focused, optional request log).
 - **`npm run dev`** runs the local dev adapter with watch (no build step).
 
-Set `HOST` and `PORT` as needed (e.g. `HOST=0.0.0.0` for containers). Use `STORAGE_TYPE=file`, `memory`, or `dynamodb` and the corresponding env vars for storage.
+Set `HOST` and `PORT` as needed (e.g. `HOST=0.0.0.0` for containers). Use `STORAGE_TYPE=level` (default) or `dynamodb` and the corresponding env vars for storage.
 
 ## Authentication
 
@@ -271,30 +270,29 @@ Org and allowed projects are not configured via env; they come from each token (
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `STORAGE_TYPE` | Storage adapter type: `file`, `memory`, `dynamodb` | `file` |
-| `STORAGE_FILE_PATH` | Path to JSON file for file adapter | `.data/storage.json` |
+| `STORAGE_TYPE` | Storage adapter type: `level`, `dynamodb` | `level` |
+| `STORAGE_LEVEL_LOCATION` | Directory for Level adapter (default storage) | `.data/level` |
 | `STORAGE_TABLE_NAME` | DynamoDB table name (required for `dynamodb` type) | - |
 | `STORAGE_KEY_PREFIX` | Key prefix for namespacing | `gitlab-ado-proxy` |
 | `AWS_REGION` | AWS region for DynamoDB | `us-east-1` |
 
 ## Storage
 
-The proxy uses a pluggable key-value storage system for OAuth tokens and sessions. This is essential for serverless environments where in-memory storage doesn't persist between invocations.
+The proxy uses a pluggable key-value storage system for OAuth tokens and sessions. This is essential for serverless environments where in-process state doesn't persist between invocations.
 
 ### Storage Adapters
 
 | Adapter | Use Case | Configuration |
 |---------|----------|---------------|
-| `file` | Local development (persists across restarts) | Default, writes to `.data/storage.json` |
-| `memory` | Ephemeral testing | Set `STORAGE_TYPE=memory` |
+| `level` | Local development (default; efficient KV, prefix scans, incremental writes) | Default, uses `.data/level` |
 | `dynamodb` | AWS Lambda, production | Set `STORAGE_TYPE=dynamodb` and `STORAGE_TABLE_NAME` |
 
 ### Local Development
 
-For local development, the default `file` storage persists data to `.data/storage.json` so tokens and mappings survive server restarts:
+For local development, the default `level` storage persists data to `.data/level` so tokens and mappings survive server restarts:
 
 ```bash
-# Uses file-backed storage by default (.data/storage.json)
+# Uses Level storage by default (.data/level)
 npm run dev
 ```
 
@@ -357,8 +355,7 @@ npm run typecheck
 - **`src/core/app.ts`**: Hono application with route handlers.
 - **`src/core/storage/`**: Cloud-agnostic key-value storage abstraction.
   - `types.ts`: Storage interface definition.
-  - `memory.ts`: In-memory adapter (ephemeral).
-  - `file.ts`: File-backed adapter for local development (persists to JSON).
-  - `dynamodb.ts`: DynamoDB adapter for AWS Lambda.
+  - `level.ts`: LevelDB adapter (default) for local KV storage (prefix scans, incremental writes).
+  - `dynamodb.ts`: DynamoDB adapter for AWS Lambda/production.
   - `factory.ts`: Creates storage instances based on configuration.
 - **`src/adapters/`**: Runtime-specific adapters.

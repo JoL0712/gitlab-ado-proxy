@@ -103,15 +103,13 @@ export interface KVStorage {
  */
 export interface StorageConfig {
   // Storage adapter type.
-  type: 'memory' | 'file' | 'dynamodb' | 'redis';
-  // Path to JSON file for file adapter (local development).
-  filePath?: string;
-  // Table/bucket name for cloud storage.
+  type: 'level' | 'dynamodb';
+  // Directory path for Level adapter (default storage).
+  levelLocation?: string;
+  // Table name for DynamoDB.
   tableName?: string;
   // AWS region for DynamoDB.
   region?: string;
-  // Redis URL for Redis adapter.
-  redisUrl?: string;
   // Key prefix for namespacing.
   keyPrefix?: string;
 }
