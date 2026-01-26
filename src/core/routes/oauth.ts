@@ -236,25 +236,13 @@ export function registerOauth(
     return c.redirect(redirectUrl.toString());
   });
 
-  // POST /oauth/token - Exchange code for proxy access token.
+  // POST /oauth/token - Exchange code or refresh token for access token.
   app.post('/oauth/token', async (c) => {
     const body = await c.req.parseBody();
     const grantType = body.grant_type as string;
-    const code = body.code as string;
     const clientSecret = body.client_secret as string;
 
-    if (grantType !== 'authorization_code') {
-      return c.json(
-        { error: 'unsupported_grant_type', error_description: 'Only authorization_code grant type is supported', statusCode: 400 },
-        400
-      );
-    }
-    if (!code) {
-      return c.json(
-        { error: 'invalid_request', error_description: 'Missing authorization code', statusCode: 400 },
-        400
-      );
-    }
+    // Validate client_secret if configured.
     if (config.oauthClientSecret && (!clientSecret || clientSecret !== config.oauthClientSecret)) {
       return c.json(
         { error: 'invalid_client', error_description: 'Invalid client_secret', statusCode: 401 },
@@ -262,28 +250,109 @@ export function registerOauth(
       );
     }
 
-    const codeData = oauthCodes.get(code);
-    if (!codeData) {
-      return c.json(
-        { error: 'invalid_grant', error_description: 'Invalid or expired authorization code', statusCode: 400 },
-        400
-      );
-    }
-    if (Date.now() > codeData.expiresAt) {
-      oauthCodes.delete(code);
-      return c.json(
-        { error: 'invalid_grant', error_description: 'Authorization code has expired', statusCode: 400 },
-        400
-      );
-    }
-    oauthCodes.delete(code);
+    if (grantType === 'authorization_code') {
+      const code = body.code as string;
 
-    return c.json({
-      access_token: codeData.accessToken,
-      token_type: 'Bearer',
-      expires_in: 7200,
-      refresh_token: null,
-      scope: 'api',
-    });
+      if (!code) {
+        return c.json(
+          { error: 'invalid_request', error_description: 'Missing authorization code', statusCode: 400 },
+          400
+        );
+      }
+
+      const codeData = oauthCodes.get(code);
+      if (!codeData) {
+        return c.json(
+          { error: 'invalid_grant', error_description: 'Invalid or expired authorization code', statusCode: 400 },
+          400
+        );
+      }
+      if (Date.now() > codeData.expiresAt) {
+        oauthCodes.delete(code);
+        return c.json(
+          { error: 'invalid_grant', error_description: 'Authorization code has expired', statusCode: 400 },
+          400
+        );
+      }
+      oauthCodes.delete(code);
+
+      // Generate a refresh token that maps to the same OAuth data.
+      const refreshToken = `glrt-${randomBytes(32).toString('base64url')}`;
+      const kv = getStorage();
+
+      // Store refresh token mapping to the access token.
+      // Refresh tokens are long-lived (30 days).
+      const refreshTokenData = {
+        accessToken: codeData.accessToken,
+        createdAt: Date.now(),
+      };
+      await kv.set(`refresh_token:${refreshToken}`, refreshTokenData, { ttl: 30 * 24 * 60 * 60 });
+
+      return c.json({
+        access_token: codeData.accessToken,
+        token_type: 'Bearer',
+        expires_in: 7200,
+        refresh_token: refreshToken,
+        scope: 'api',
+      });
+    } else if (grantType === 'refresh_token') {
+      const refreshToken = body.refresh_token as string;
+
+      if (!refreshToken) {
+        return c.json(
+          { error: 'invalid_request', error_description: 'Missing refresh_token', statusCode: 400 },
+          400
+        );
+      }
+
+      const kv = getStorage();
+      const refreshData = await kv.get<{ accessToken: string; createdAt: number }>(`refresh_token:${refreshToken}`);
+
+      if (!refreshData) {
+        return c.json(
+          { error: 'invalid_grant', error_description: 'Invalid or expired refresh token', statusCode: 400 },
+          400
+        );
+      }
+
+      // Verify the original OAuth token still exists.
+      const oauthData = await kv.get<OAuthTokenData>(`oauth_token:${refreshData.accessToken}`);
+      if (!oauthData) {
+        // Original token was revoked or deleted.
+        await kv.delete(`refresh_token:${refreshToken}`);
+        return c.json(
+          { error: 'invalid_grant', error_description: 'Associated access token no longer valid', statusCode: 400 },
+          400
+        );
+      }
+
+      // Generate a new access token with the same OAuth data.
+      const newAccessToken = `glpat-oauth-${randomBytes(24).toString('base64url')}`;
+      await kv.set(`oauth_token:${newAccessToken}`, oauthData);
+
+      // Generate a new refresh token (token rotation for security).
+      const newRefreshToken = `glrt-${randomBytes(32).toString('base64url')}`;
+      const newRefreshData = {
+        accessToken: newAccessToken,
+        createdAt: Date.now(),
+      };
+      await kv.set(`refresh_token:${newRefreshToken}`, newRefreshData, { ttl: 30 * 24 * 60 * 60 });
+
+      // Invalidate the old refresh token.
+      await kv.delete(`refresh_token:${refreshToken}`);
+
+      return c.json({
+        access_token: newAccessToken,
+        token_type: 'Bearer',
+        expires_in: 7200,
+        refresh_token: newRefreshToken,
+        scope: 'api',
+      });
+    } else {
+      return c.json(
+        { error: 'unsupported_grant_type', error_description: 'Supported grant types: authorization_code, refresh_token', statusCode: 400 },
+        400
+      );
+    }
   });
 }
