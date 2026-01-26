@@ -199,7 +199,7 @@ npm run dev
 npm run dev
 ```
 
-3. Test the proxy: use an OAuth-issued proxy token or a project token (see [Authentication](#authentication)). Raw PATs are not accepted.
+3. Test the proxy: use an OAuth-issued proxy token, a project token, or a raw ADO PAT with your org name as the username (see [Authentication](#authentication)).
 
 ### Building
 
@@ -224,12 +224,42 @@ Set `HOST` and `PORT` as needed (e.g. `HOST=0.0.0.0` for containers). Use `STORA
 
 ## Authentication
 
-Only **OAuth-issued proxy tokens** and **project access tokens** (created via the API when using an OAuth token) are accepted. Raw Azure DevOps PATs are not accepted for API or Git requests.
+The proxy supports multiple authentication methods:
 
-- **OAuth flow**: `client_id` is the ADO organization name. The user enters a PAT, selects projects, and receives a proxy token (`glpat-oauth-...`) that carries org and allowed projects.
-- **Project tokens**: Created with `POST /api/v4/projects/:id/access_tokens` when using an OAuth token; they store the same org and allowed projects and are used as `glpat-*`.
+| Method | Username | Password/Token | Use Case |
+|--------|----------|----------------|----------|
+| **OAuth token** | anything (e.g., `oauth2`) | `glpat-oauth-...` | Recommended for Cursor Cloud |
+| **Project token** | anything | `glpat-...` | Created via API |
+| **Raw ADO PAT** | ADO organization name | Raw ADO PAT | Quick access / git clone |
 
-Credentials are sent as GitLab-style `PRIVATE-TOKEN` or `Authorization: Bearer <token>` and converted to ADO Basic auth under the hood using the stored PAT.
+### OAuth Flow (Recommended)
+
+- `client_id` is the ADO organization name
+- User enters a PAT, selects projects, and receives a proxy token (`glpat-oauth-...`)
+- The proxy token carries org and allowed projects; the raw PAT is never returned
+
+### Project Tokens
+
+- Created with `POST /api/v4/projects/:id/access_tokens` when using an OAuth token
+- They store the same org and allowed projects and are used as `glpat-*`
+
+### Raw ADO PAT
+
+For quick access (especially git clone), you can use a raw Azure DevOps PAT directly:
+
+```bash
+# Git clone with raw PAT
+git clone https://your-proxy.com/project/repo
+# Username: your-ado-org-name
+# Password: your-ado-pat
+
+# Or embed in URL
+git clone https://myorg:my-ado-pat@your-proxy.com/project/repo
+```
+
+The organization name must be provided as the username since the PAT itself doesn't contain org info.
+
+Credentials are sent as GitLab-style `PRIVATE-TOKEN`, `Authorization: Bearer <token>`, or Basic auth, and converted to ADO Basic auth under the hood.
 
 ## Access Control
 
@@ -262,9 +292,12 @@ Org and allowed projects are derived from the token.
 
 7. Cursor exchanges the code for an access token. The token is a proxy token (`glpat-oauth-...`), not the raw PAT. All API and Git requests use that token; org and projects are taken from it.
 
-### Option 2: Project or OAuth tokens only
+### Option 2: Direct Authentication
 
-Use the proxy with `PRIVATE-TOKEN` or `Authorization: Bearer` only when the value is an OAuth-issued proxy token or a project token created via the API. Raw Azure DevOps PATs are rejected.
+Use the proxy with any of the supported authentication methods:
+
+- **OAuth/Project tokens**: Use `PRIVATE-TOKEN` header or `Authorization: Bearer <token>`
+- **Raw ADO PAT**: Use Basic auth with org name as username and PAT as password
 
 ## Environment Variables
 
