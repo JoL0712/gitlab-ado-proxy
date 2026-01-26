@@ -40,11 +40,23 @@ export class LevelStorage implements KVStorage {
     return key;
   }
 
-  private isExpired(item: StorageItem<unknown>): boolean {
-    if (item.expiresAt === null) {
+  private isExpired(item: StorageItem<unknown> | null | undefined): boolean {
+    if (!item || item.expiresAt === null || item.expiresAt === undefined) {
       return false;
     }
     return Date.now() / 1000 > item.expiresAt;
+  }
+
+  /**
+   * Check if the raw value from DB is a valid StorageItem.
+   */
+  private isStorageItem(value: unknown): value is StorageItem<unknown> {
+    return (
+      value !== null &&
+      typeof value === 'object' &&
+      'value' in value &&
+      'createdAt' in value
+    );
   }
 
   async get<T = unknown>(key: string): Promise<T | null> {
@@ -56,8 +68,22 @@ export class LevelStorage implements KVStorage {
     const prefixedKey = this.prefixKey(key);
 
     try {
-      const item = (await this.db.get(prefixedKey)) as StorageItem<T>;
-      if (this.isExpired(item as StorageItem<unknown>)) {
+      const raw = await this.db.get(prefixedKey);
+
+      // Handle legacy data that isn't wrapped in StorageItem format.
+      if (!this.isStorageItem(raw)) {
+        // Return as-is wrapped in a minimal StorageItem.
+        const now = Math.floor(Date.now() / 1000);
+        return {
+          value: raw as T,
+          expiresAt: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+      }
+
+      const item = raw as StorageItem<T>;
+      if (this.isExpired(item)) {
         await this.db.del(prefixedKey);
         return null;
       }
