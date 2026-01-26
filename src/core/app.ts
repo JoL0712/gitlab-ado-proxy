@@ -1,5 +1,6 @@
 import { appendFile, mkdir, unlink } from 'fs/promises';
 import { dirname } from 'path';
+import { randomBytes } from 'node:crypto';
 import { gunzipSync, inflateSync } from 'node:zlib';
 import { Hono, Context } from 'hono';
 import { cors } from 'hono/cors';
@@ -9,11 +10,13 @@ import { getStorage } from './storage/index.js';
 import type {
   ProxyConfig,
   RequestContext,
+  EffectiveConfig,
   GitLabMergeRequestCreate,
   GitLabCommitCreate,
   GitLabProjectAccessToken,
   GitLabProjectAccessTokenCreate,
   StoredAccessToken,
+  OAuthTokenData,
   ADORepository,
   ADOGitRefsResponse,
   ADOPullRequest,
@@ -466,92 +469,100 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     }
 
     let adoAuthHeader: string;
-    let tokenSource = privateToken 
-      ? 'PRIVATE-TOKEN' 
-      : authHeader?.startsWith('Basic ') 
-        ? 'Basic-Auth' 
+    let effectiveConfig: EffectiveConfig;
+    let tokenSource = privateToken
+      ? 'PRIVATE-TOKEN'
+      : authHeader?.startsWith('Basic ')
+        ? 'Basic-Auth'
         : 'Authorization';
 
-    // Check if this is one of our generated project access tokens (glpat-*).
-    if (gitlabToken.startsWith('glpat-')) {
-      console.log('[Auth] Detected project access token, looking up ADO PAT...');
-      
+    const storage = getStorage();
+
+    // OAuth proxy token (glpat-oauth-*): resolve from oauth_token storage and set effective config.
+    if (gitlabToken.startsWith('glpat-oauth-')) {
       try {
-        const storage = getStorage();
+        const oauthData = await storage.get<OAuthTokenData>(`oauth_token:${gitlabToken}`);
+        if (!oauthData) {
+          console.warn('[Auth] OAuth proxy token not found.');
+          c.header('WWW-Authenticate', 'Bearer error="invalid_token", error_description="Invalid or expired OAuth token"');
+          c.header('X-Require-Reauth', 'true');
+          return c.json({ message: '401 Unauthorized' }, 401);
+        }
+        adoAuthHeader = MappingService.convertAuth(oauthData.adoPat);
+        effectiveConfig = {
+          ...config,
+          adoBaseUrl: oauthData.adoBaseUrl,
+          allowedProjects: oauthData.allowedProjects,
+        };
+        tokenSource = 'OAuthProxyToken';
+        console.log('[Auth] OAuth proxy token resolved:', { orgName: oauthData.orgName });
+      } catch (error) {
+        console.error('[Auth] Error resolving OAuth token:', error);
+        return c.json(
+          { error: 'Internal Server Error', message: 'Failed to validate OAuth token', statusCode: 500 },
+          500
+        );
+      }
+    } else if (gitlabToken.startsWith('glpat-')) {
+      // Project access token: resolve and require stored adoBaseUrl/allowedProjects.
+      try {
         const tokenLookup = await storage.get<{ projectId: string; tokenId: number }>(`token_lookup:${gitlabToken}`);
-        
         if (!tokenLookup) {
-          console.warn('[Auth] Project access token not found in storage:', {
-            tokenPrefix: gitlabToken.substring(0, 15) + '...',
-          });
+          console.warn('[Auth] Project access token not found in storage.');
           c.header('WWW-Authenticate', 'Bearer error="invalid_token", error_description="Invalid or expired project access token"');
           c.header('X-Require-Reauth', 'true');
           return c.json({ message: '401 Unauthorized' }, 401);
         }
-
-        // Look up the full token data.
         const tokenData = await storage.get<StoredAccessToken>(
           `access_token:${tokenLookup.projectId}:${tokenLookup.tokenId}`
         );
-
         if (!tokenData || tokenData.revoked) {
-          console.warn('[Auth] Project access token revoked or not found:', {
-            projectId: tokenLookup.projectId,
-            tokenId: tokenLookup.tokenId,
-            revoked: tokenData?.revoked,
-          });
           c.header('WWW-Authenticate', 'Bearer error="invalid_token", error_description="Project access token has been revoked"');
           c.header('X-Require-Reauth', 'true');
           return c.json({ message: '401 Unauthorized' }, 401);
         }
-
-        // Check expiration.
         if (tokenData.expiresAt && new Date(tokenData.expiresAt) < new Date()) {
-          console.warn('[Auth] Project access token expired:', {
-            projectId: tokenLookup.projectId,
-            tokenId: tokenLookup.tokenId,
-            expiresAt: tokenData.expiresAt,
-          });
           c.header('WWW-Authenticate', 'Bearer error="invalid_token", error_description="Project access token has expired"');
           c.header('X-Require-Reauth', 'true');
           return c.json({ message: '401 Unauthorized' }, 401);
         }
-
-        // Update last used timestamp.
+        if (tokenData.adoBaseUrl === undefined || tokenData.allowedProjects === undefined) {
+          console.warn('[Auth] Project token missing adoBaseUrl/allowedProjects (legacy token).');
+          c.header('WWW-Authenticate', 'Bearer error="invalid_token", error_description="Token must be re-created"');
+          c.header('X-Require-Reauth', 'true');
+          return c.json({ message: '401 Unauthorized' }, 401);
+        }
         tokenData.lastUsedAt = new Date().toISOString();
         await storage.set(
           `access_token:${tokenLookup.projectId}:${tokenLookup.tokenId}`,
           tokenData
         );
-
-        // Use the stored ADO PAT.
         adoAuthHeader = MappingService.convertAuth(tokenData.adoPat);
+        effectiveConfig = {
+          ...config,
+          adoBaseUrl: tokenData.adoBaseUrl,
+          allowedProjects: tokenData.allowedProjects,
+        };
         tokenSource = 'ProjectAccessToken';
-
-        console.log('[Auth] Project access token resolved:', {
-          projectId: tokenLookup.projectId,
-          tokenId: tokenLookup.tokenId,
-          tokenName: tokenData.name,
-        });
+        console.log('[Auth] Project access token resolved:', { projectId: tokenLookup.projectId, tokenId: tokenLookup.tokenId });
       } catch (error) {
         console.error('[Auth] Error looking up project access token:', error);
         return c.json(
-          {
-            error: 'Internal Server Error',
-            message: 'Failed to validate project access token',
-            statusCode: 500,
-          },
+          { error: 'Internal Server Error', message: 'Failed to validate project access token', statusCode: 500 },
           500
         );
       }
     } else {
-      // Regular ADO PAT - convert directly.
-      adoAuthHeader = MappingService.convertAuth(gitlabToken);
+      // Raw PAT is no longer accepted.
+      console.warn('[Auth] Raw PAT not accepted; use OAuth or project tokens.');
+      c.header('WWW-Authenticate', 'Bearer error="invalid_token", error_description="Only OAuth and project tokens are accepted"');
+      c.header('X-Require-Reauth', 'true');
+      return c.json({ message: '401 Unauthorized' }, 401);
     }
 
     // Set context for downstream handlers.
     c.set('ctx', {
-      config,
+      config: effectiveConfig,
       adoAuthHeader,
     });
 
@@ -996,11 +1007,27 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     }
   });
 
-  // Simple in-memory store for OAuth authorization codes.
-  // In production, you might want to use a proper cache/store.
+  // In-memory store for OAuth authorization codes (code -> { accessToken: proxy token, expiresAt }).
   const oauthCodes = new Map<string, { accessToken: string; expiresAt: number }>();
 
-  // GET /oauth/authorize - OAuth 2.0 authorization endpoint.
+  // Session store for step 1 -> step 2: sessionId -> { clientId, redirectUri, state, responseType, scope, pat, projects, expiresAt }.
+  const SESSION_TTL_MS = 10 * 60 * 1000;
+  const authSessions = new Map<string, {
+    clientId: string;
+    redirectUri: string;
+    state: string;
+    responseType: string;
+    scope: string;
+    pat: string;
+    projects: string[];
+    expiresAt: number;
+  }>();
+
+  function normalizeOrgForUrl(org: string): string {
+    return encodeURIComponent(org.trim().replace(/\s+/g, '-'));
+  }
+
+  // GET /oauth/authorize - Step 1: show form to enter PAT for client_id (org name).
   app.get('/oauth/authorize', async (c) => {
     const clientId = c.req.query('client_id');
     const redirectUri = c.req.query('redirect_uri');
@@ -1008,37 +1035,13 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     const responseType = c.req.query('response_type');
     const scope = c.req.query('scope');
 
-    // Validate required parameters.
     if (!clientId || !redirectUri || !state || responseType !== 'code') {
       return c.json(
-        {
-          error: 'invalid_request',
-          error_description: 'Missing required parameters',
-          statusCode: 400,
-        },
+        { error: 'invalid_request', error_description: 'Missing required parameters', statusCode: 400 },
         400
       );
     }
 
-    // Validate client_id if OAuth client ID is configured.
-    if (config.oauthClientId && clientId !== config.oauthClientId) {
-      console.warn('[OAuth] Invalid client_id:', {
-        provided: clientId,
-        expected: config.oauthClientId,
-        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
-      });
-      return c.json(
-        {
-          error: 'invalid_client',
-          error_description: 'Invalid client_id',
-          statusCode: 401,
-        },
-        401
-      );
-    }
-
-    // For a proxy, we'll accept any client_id and show a simple authorization page.
-    // In a real implementation, you'd validate the client_id and show a proper consent page.
     const html = `
 <!DOCTYPE html>
 <html>
@@ -1057,7 +1060,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 <body>
   <h2>Authorize Application</h2>
   <div class="info">
-    <p><strong>Application:</strong> ${clientId}</p>
+    <p><strong>Organization:</strong> ${clientId}</p>
     <p><strong>Scopes:</strong> ${scope || 'api'}</p>
   </div>
   <form method="POST" action="/oauth/authorize">
@@ -1069,172 +1072,221 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     <div class="form-group">
       <label for="pat">Azure DevOps Personal Access Token:</label>
       <input type="text" id="pat" name="pat" placeholder="Enter your ADO PAT" required>
-      <small>This token will be used to authenticate with Azure DevOps.</small>
+      <small>This token will be used to authenticate with Azure DevOps and list projects.</small>
+    </div>
+    <button type="submit">Continue</button>
+  </form>
+</body>
+</html>
+    `;
+    return c.html(html);
+  });
+
+  // POST /oauth/authorize - Step 1: validate PAT via ADO Projects API, then show project-selection (step 2).
+  app.post('/oauth/authorize', async (c) => {
+    const body = await c.req.parseBody();
+    const clientId = (body.client_id as string)?.trim();
+    const redirectUri = (body.redirect_uri as string)?.trim();
+    const state = (body.state as string)?.trim();
+    const responseType = (body.response_type as string)?.trim();
+    const scope = (body.scope as string)?.trim() || 'api';
+    const pat = (body.pat as string)?.trim();
+    const selectedProjects = body['projects[]'] ?? body.selected_projects;
+
+    if (!clientId || !redirectUri || !state || responseType !== 'code' || !pat) {
+      return c.json(
+        { error: 'invalid_request', error_description: 'Missing required parameters', statusCode: 400 },
+        400
+      );
+    }
+
+    // Step 2 already done (session_id + projects): not handled here; that is POST /oauth/authorize/confirm.
+    if (selectedProjects !== undefined && selectedProjects !== null) {
+      return c.json(
+        { error: 'invalid_request', error_description: 'Submit project selection to /oauth/authorize/confirm', statusCode: 400 },
+        400
+      );
+    }
+
+    const adoBaseUrl = `https://dev.azure.com/${normalizeOrgForUrl(clientId)}`;
+    const projectsUrl = MappingService.buildAdoUrl(adoBaseUrl, '/_apis/projects', '7.1');
+    const authHeader = MappingService.convertAuth(pat);
+
+    const response = await fetch(projectsUrl, {
+      method: 'GET',
+      headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      console.warn('[OAuth] PAT validation failed:', { status: response.status, body: text.slice(0, 200) });
+      return c.json(
+        {
+          error: 'access_denied',
+          error_description: 'Invalid PAT or organization unreachable',
+          statusCode: 400,
+        },
+        400
+      );
+    }
+
+    type AdoProject = { name: string; id?: string };
+    const data = (await response.json()) as { value?: AdoProject[] };
+    const projects: string[] = (data.value ?? []).map((p) => p.name).filter(Boolean);
+
+    const sessionId = Buffer.from(`${Date.now()}-${Math.random()}`).toString('base64url');
+    const expiresAt = Date.now() + SESSION_TTL_MS;
+    authSessions.set(sessionId, {
+      clientId,
+      redirectUri,
+      state,
+      responseType,
+      scope,
+      pat,
+      projects,
+      expiresAt,
+    });
+
+    const projectList = projects
+      .map(
+        (name) =>
+          `<label><input type="checkbox" name="projects[]" value="${name.replace(/"/g, '&quot;')}"> ${name.replace(/</g, '&lt;')}</label>`
+      )
+      .join('<br>');
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Select Projects</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 500px; margin: 50px auto; padding: 20px; }
+    .form-group { margin-bottom: 15px; }
+    label { display: block; margin: 8px 0; }
+    button { background: #007bff; color: white; padding: 10px 20px; border: none; cursor: pointer; }
+    button:hover { background: #0056b3; }
+    .info { background: #f0f0f0; padding: 10px; margin-bottom: 20px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h2>Select Projects</h2>
+  <div class="info">
+    <p>Choose which Azure DevOps projects this token may access for organization <strong>${clientId.replace(/</g, '&lt;')}</strong>.</p>
+  </div>
+  <form method="POST" action="/oauth/authorize/confirm">
+    <input type="hidden" name="session_id" value="${sessionId}">
+    <div class="form-group">
+      ${projectList || '<p>No projects found.</p>'}
     </div>
     <button type="submit">Authorize</button>
   </form>
 </body>
 </html>
     `;
-
     return c.html(html);
   });
 
-  // POST /oauth/authorize - Handle authorization form submission.
-  app.post('/oauth/authorize', async (c) => {
+  // POST /oauth/authorize/confirm - Step 2: create proxy token, store it, redirect with code.
+  app.post('/oauth/authorize/confirm', async (c) => {
     const body = await c.req.parseBody();
-    const clientId = c.req.query('client_id') || body.client_id as string;
-    const redirectUri = c.req.query('redirect_uri') || body.redirect_uri as string;
-    const state = c.req.query('state') || body.state as string;
-    const responseType = c.req.query('response_type') || body.response_type as string;
-    const pat = body.pat as string;
+    const sessionId = (body.session_id as string)?.trim();
+    const rawProjects = body['projects[]'] ?? body.selected_projects;
 
-    if (!clientId || !redirectUri || !state || responseType !== 'code' || !pat) {
+    if (!sessionId) {
       return c.json(
-        {
-          error: 'invalid_request',
-          error_description: 'Missing required parameters',
-          statusCode: 400,
-        },
+        { error: 'invalid_request', error_description: 'Missing session_id', statusCode: 400 },
         400
       );
     }
 
-    // Validate client_id if OAuth client ID is configured.
-    if (config.oauthClientId && clientId !== config.oauthClientId) {
-      console.warn('[OAuth] Invalid client_id in POST:', {
-        provided: clientId,
-        expected: config.oauthClientId,
-        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
-      });
+    const session = authSessions.get(sessionId);
+    authSessions.delete(sessionId);
+
+    if (!session || Date.now() > session.expiresAt) {
       return c.json(
-        {
-          error: 'invalid_client',
-          error_description: 'Invalid client_id',
-          statusCode: 401,
-        },
-        401
+        { error: 'invalid_request', error_description: 'Session expired or invalid', statusCode: 400 },
+        400
       );
     }
 
-    // Generate authorization code.
+    const selectedProjects: string[] = Array.isArray(rawProjects)
+      ? rawProjects.map((p) => String(p).trim()).filter(Boolean)
+      : typeof rawProjects === 'string'
+        ? rawProjects.split(',').map((p) => p.trim()).filter(Boolean)
+        : [];
+
+    const adoBaseUrl = `https://dev.azure.com/${normalizeOrgForUrl(session.clientId)}`;
+    const allowedProjects = selectedProjects.length > 0 ? selectedProjects : session.projects;
+
+    const tokenValue = `glpat-oauth-${randomBytes(24).toString('base64url')}`;
+    const kv = getStorage();
+    const oauthData: OAuthTokenData = {
+      adoPat: session.pat,
+      orgName: session.clientId,
+      adoBaseUrl,
+      allowedProjects,
+    };
+    await kv.set(`oauth_token:${tokenValue}`, oauthData);
+
     const authCode = Buffer.from(`${Date.now()}-${Math.random()}`).toString('base64url');
-    
-    // Store the PAT with the authorization code (expires in 10 minutes).
     oauthCodes.set(authCode, {
-      accessToken: pat,
-      expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes.
+      accessToken: tokenValue,
+      expiresAt: Date.now() + 10 * 60 * 1000,
     });
 
-    // Redirect back to the application with the authorization code.
-    const redirectUrl = new URL(redirectUri);
+    const redirectUrl = new URL(session.redirectUri);
     redirectUrl.searchParams.set('code', authCode);
-    redirectUrl.searchParams.set('state', state);
-
+    redirectUrl.searchParams.set('state', session.state);
     return c.redirect(redirectUrl.toString());
   });
 
-  // POST /oauth/token - OAuth 2.0 token endpoint.
+  // POST /oauth/token - Exchange code for proxy access token.
   app.post('/oauth/token', async (c) => {
     const body = await c.req.parseBody();
     const grantType = body.grant_type as string;
     const code = body.code as string;
-    const clientId = body.client_id as string;
     const clientSecret = body.client_secret as string;
 
     if (grantType !== 'authorization_code') {
       return c.json(
-        {
-          error: 'unsupported_grant_type',
-          error_description: 'Only authorization_code grant type is supported',
-          statusCode: 400,
-        },
+        { error: 'unsupported_grant_type', error_description: 'Only authorization_code grant type is supported', statusCode: 400 },
         400
       );
     }
-
     if (!code) {
       return c.json(
-        {
-          error: 'invalid_request',
-          error_description: 'Missing authorization code',
-          statusCode: 400,
-        },
+        { error: 'invalid_request', error_description: 'Missing authorization code', statusCode: 400 },
         400
       );
     }
-
-    // Validate client_id if OAuth client ID is configured.
-    if (config.oauthClientId && clientId !== config.oauthClientId) {
-      console.warn('[OAuth] Invalid client_id in token exchange:', {
-        provided: clientId,
-        expected: config.oauthClientId,
-        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
-      });
+    if (config.oauthClientSecret && (!clientSecret || clientSecret !== config.oauthClientSecret)) {
       return c.json(
-        {
-          error: 'invalid_client',
-          error_description: 'Invalid client_id',
-          statusCode: 401,
-        },
+        { error: 'invalid_client', error_description: 'Invalid client_secret', statusCode: 401 },
         401
       );
     }
 
-    // Validate client_secret if OAuth client secret is configured.
-    if (config.oauthClientSecret) {
-      if (!clientSecret || clientSecret !== config.oauthClientSecret) {
-        console.warn('[OAuth] Invalid client_secret in token exchange:', {
-          hasSecret: !!clientSecret,
-          ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
-        });
-        return c.json(
-          {
-            error: 'invalid_client',
-            error_description: 'Invalid client_secret',
-            statusCode: 401,
-          },
-          401
-        );
-      }
-    }
-
-    // Look up the authorization code.
     const codeData = oauthCodes.get(code);
     if (!codeData) {
       return c.json(
-        {
-          error: 'invalid_grant',
-          error_description: 'Invalid or expired authorization code',
-          statusCode: 400,
-        },
+        { error: 'invalid_grant', error_description: 'Invalid or expired authorization code', statusCode: 400 },
         400
       );
     }
-
-    // Check if code has expired.
     if (Date.now() > codeData.expiresAt) {
       oauthCodes.delete(code);
       return c.json(
-        {
-          error: 'invalid_grant',
-          error_description: 'Authorization code has expired',
-          statusCode: 400,
-        },
+        { error: 'invalid_grant', error_description: 'Authorization code has expired', statusCode: 400 },
         400
       );
     }
-
-    // Delete the code (one-time use).
     oauthCodes.delete(code);
 
-    // Return the access token (which is the PAT).
-    // GitLab OAuth tokens are typically valid for 2 hours, but we'll use the PAT directly.
     return c.json({
       access_token: codeData.accessToken,
       token_type: 'Bearer',
-      expires_in: 7200, // 2 hours (GitLab standard).
-      refresh_token: null, // Not implementing refresh tokens for simplicity.
+      expires_in: 7200,
+      refresh_token: null,
       scope: 'api',
     });
   });
@@ -1381,6 +1433,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         revoked: false,
         userId: 1,
         userName: 'user',
+        adoBaseUrl: ctx.config.adoBaseUrl,
+        allowedProjects: ctx.config.allowedProjects,
       };
 
       // Store the token by its generated value (so we can look it up when used).
@@ -1552,6 +1606,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 
   // POST /api/v4/projects/:id/access_tokens/:token_id/rotate - Rotate project access token.
   app.post('/api/v4/projects/:id/access_tokens/:token_id/rotate', async (c) => {
+    const { ctx } = c.var;
     const projectId = c.req.param('id');
     const tokenIdParam = c.req.param('token_id');
 
@@ -1645,6 +1700,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         revoked: false,
         userId: oldTokenData.userId,
         userName: oldTokenData.userName,
+        adoBaseUrl: ctx.config.adoBaseUrl,
+        allowedProjects: ctx.config.allowedProjects,
       };
 
       // Store the new token.
@@ -3986,34 +4043,25 @@ export function createApp(config: ProxyConfig): Hono<Env> {
   // Git Smart HTTP Protocol Endpoints (for git clone/fetch/push)
   // ==========================================================================
 
-  // Helper function to extract auth from Git HTTP requests.
-  // These routes don't use the /api/v4/* middleware, so we handle auth inline.
-  async function extractGitAuth(c: Context): Promise<{ adoAuthHeader: string } | null> {
+  // Helper to extract auth from Git HTTP requests. Returns adoBaseUrl and allowedProjects from token storage.
+  // Raw PAT is rejected (null). Only OAuth proxy tokens and project tokens with stored org/projects are accepted.
+  async function extractGitAuth(c: Context): Promise<{
+    adoAuthHeader: string;
+    adoBaseUrl: string;
+    allowedProjects: string[];
+  } | null> {
     const authHeader = c.req.header('Authorization');
-
     if (!authHeader) {
       return null;
     }
 
     let token: string | null = null;
-
     if (authHeader.toLowerCase().startsWith('basic ')) {
       try {
         const base64Credentials = authHeader.substring(6).trim();
         const decoded = Buffer.from(base64Credentials, 'base64').toString('utf-8');
         const colonIndex = decoded.indexOf(':');
-
-        if (colonIndex !== -1) {
-          // Use password as the token (format: username:password).
-          token = decoded.substring(colonIndex + 1);
-        } else {
-          token = decoded;
-        }
-
-        console.log('[Git Auth] Extracted from Basic auth:', {
-          tokenPrefix: token ? token.substring(0, 10) + '...' : 'none',
-          tokenLength: token?.length ?? 0,
-        });
+        token = colonIndex !== -1 ? decoded.substring(colonIndex + 1) : decoded;
       } catch (e) {
         console.warn('[Git Auth] Failed to decode Basic auth:', e);
         return null;
@@ -4026,34 +4074,40 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       return null;
     }
 
-    // Check if this is a glpat token that needs lookup.
-    if (token.startsWith('glpat-')) {
-      try {
-        const storage = getStorage();
-        const tokenLookup = await storage.get<{ projectId: string; tokenId: number }>(`token_lookup:${token}`);
+    const storage = getStorage();
 
-        if (!tokenLookup) {
-          console.warn('[Git Auth] Project access token not found');
-          return null;
-        }
-
-        const tokenData = await storage.get<StoredAccessToken>(
-          `access_token:${tokenLookup.projectId}:${tokenLookup.tokenId}`
-        );
-
-        if (!tokenData || tokenData.revoked) {
-          return null;
-        }
-
-        return { adoAuthHeader: MappingService.convertAuth(tokenData.adoPat) };
-      } catch (error) {
-        console.error('[Git Auth] Error looking up token:', error);
+    if (token.startsWith('glpat-oauth-')) {
+      const oauthData = await storage.get<OAuthTokenData>(`oauth_token:${token}`);
+      if (!oauthData) {
         return null;
       }
+      return {
+        adoAuthHeader: MappingService.convertAuth(oauthData.adoPat),
+        adoBaseUrl: oauthData.adoBaseUrl,
+        allowedProjects: oauthData.allowedProjects,
+      };
     }
 
-    // Regular token - use as ADO PAT.
-    return { adoAuthHeader: MappingService.convertAuth(token) };
+    if (token.startsWith('glpat-')) {
+      const tokenLookup = await storage.get<{ projectId: string; tokenId: number }>(`token_lookup:${token}`);
+      if (!tokenLookup) {
+        return null;
+      }
+      const tokenData = await storage.get<StoredAccessToken>(
+        `access_token:${tokenLookup.projectId}:${tokenLookup.tokenId}`
+      );
+      if (!tokenData || tokenData.revoked || tokenData.adoBaseUrl === undefined || tokenData.allowedProjects === undefined) {
+        return null;
+      }
+      return {
+        adoAuthHeader: MappingService.convertAuth(tokenData.adoPat),
+        adoBaseUrl: tokenData.adoBaseUrl,
+        allowedProjects: tokenData.allowedProjects,
+      };
+    }
+
+    // Raw PAT is not accepted for Git.
+    return null;
   }
 
   // GET /:namespace/:project/info/refs - Git discovery endpoint.
@@ -4085,14 +4139,13 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     }
 
     try {
-      // Resolve repository using our existing helper.
       const repoPath = `${namespace}/${project}`;
       const repoInfo = await fetchRepositoryInfo(
         repoPath,
         gitAuth.adoAuthHeader,
-        config.adoBaseUrl,
+        gitAuth.adoBaseUrl,
         config.adoApiVersion ?? '7.1',
-        config.allowedProjects
+        gitAuth.allowedProjects
       );
 
       if (!repoInfo) {
@@ -4100,9 +4153,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         return c.text('Repository not found', 404);
       }
 
-      // Build ADO Git URL.
-      // ADO Git HTTP format: https://dev.azure.com/{org}/{project}/_git/{repo}/info/refs?service=...
-      const adoGitUrl = `${config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/info/refs?service=${service}`;
+      const adoGitUrl = `${gitAuth.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/info/refs?service=${service}`;
 
       console.log('[Git Smart HTTP] Proxying to ADO:', { adoGitUrl });
 
@@ -4174,16 +4225,16 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       const repoInfo = await fetchRepositoryInfo(
         repoPath,
         gitAuth.adoAuthHeader,
-        config.adoBaseUrl,
+        gitAuth.adoBaseUrl,
         config.adoApiVersion ?? '7.1',
-        config.allowedProjects
+        gitAuth.allowedProjects
       );
 
       if (!repoInfo) {
         return c.text('Repository not found', 404);
       }
 
-      const adoGitUrl = `${config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-upload-pack`;
+      const adoGitUrl = `${gitAuth.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-upload-pack`;
       const rawBody = await c.req.arrayBuffer();
       const requestBody = decodeGitBody(rawBody, c.req.header('Content-Encoding') ?? undefined);
 
@@ -4242,16 +4293,16 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       const repoInfo = await fetchRepositoryInfo(
         repoPath,
         gitAuth.adoAuthHeader,
-        config.adoBaseUrl,
+        gitAuth.adoBaseUrl,
         config.adoApiVersion ?? '7.1',
-        config.allowedProjects
+        gitAuth.allowedProjects
       );
 
       if (!repoInfo) {
         return c.text('Repository not found', 404);
       }
 
-      const adoGitUrl = `${config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-receive-pack`;
+      const adoGitUrl = `${gitAuth.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-receive-pack`;
       const rawBody = await c.req.arrayBuffer();
       const requestBody = decodeGitBody(rawBody, c.req.header('Content-Encoding') ?? undefined);
 
@@ -4287,19 +4338,9 @@ export function createApp(config: ProxyConfig): Hono<Env> {
   return app;
 }
 
-// Parse allowed projects from comma-separated environment variable.
-function parseAllowedProjects(envVar?: string): string[] | undefined {
-  if (!envVar || envVar.trim() === '') {
-    return undefined;
-  }
-  return envVar.split(',').map((p) => p.trim()).filter((p) => p.length > 0);
-}
-
 // Export a default app instance for simple usage.
+// Org and allowed projects come from tokens only; no env-based ADO_BASE_URL or ALLOWED_PROJECTS.
 export const app = createApp({
-  adoBaseUrl: process.env.ADO_BASE_URL ?? 'https://dev.azure.com/org',
   adoApiVersion: process.env.ADO_API_VERSION ?? '7.1',
-  oauthClientId: process.env.OAUTH_CLIENT_ID,
   oauthClientSecret: process.env.OAUTH_CLIENT_SECRET,
-  allowedProjects: parseAllowedProjects(process.env.ALLOWED_PROJECTS),
 });

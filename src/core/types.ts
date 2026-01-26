@@ -125,6 +125,16 @@ export interface GitLabProjectAccessTokenCreate {
   expires_at?: string;
 }
 
+/**
+ * OAuth-backed proxy token data stored under key oauth_token:{tokenValue}.
+ */
+export interface OAuthTokenData {
+  adoPat: string;
+  orgName: string;
+  adoBaseUrl: string;
+  allowedProjects: string[];
+}
+
 // Stored access token (internal representation).
 export interface StoredAccessToken {
   id: number;
@@ -142,6 +152,9 @@ export interface StoredAccessToken {
   // User info from when the token was created.
   userId: number;
   userName: string;
+  // ADO org and projects from the creating user's OAuth token context.
+  adoBaseUrl: string;
+  allowedProjects: string[];
 }
 
 // GitLab Tree Item (file/directory in repository).
@@ -394,24 +407,24 @@ export interface ADOChange {
 
 /**
  * Proxy Configuration.
+ * Org and allowed projects are always derived from the token (OAuth or project token); no env-based overrides.
  */
 export interface ProxyConfig {
-  // Base URL for Azure DevOps organization (e.g., https://dev.azure.com/org).
-  // The proxy is project-agnostic and uses repository GUIDs to access repositories across all projects.
-  adoBaseUrl: string;
   // Optional: Override the API version.
   adoApiVersion?: string;
-  // Optional: OAuth client ID for validating OAuth requests.
-  oauthClientId?: string;
   // Optional: OAuth client secret for validating OAuth token exchange.
   oauthClientSecret?: string;
-  // Optional: Comma-separated list of allowed ADO project names.
-  // If set, only repositories from these projects will be accessible.
-  // If not set, all projects are accessible.
-  allowedProjects?: string[];
   // Optional: For local development only. When set, full request/response bodies are appended to this file.
   // File is cleared when the server starts so each run gets a fresh log.
   requestLogPath?: string;
+}
+
+/**
+ * Effective per-request config. Built from the token (OAuth or project) and passed in RequestContext.
+ */
+export interface EffectiveConfig extends ProxyConfig {
+  adoBaseUrl: string;
+  allowedProjects: string[];
 }
 
 /**
@@ -419,7 +432,7 @@ export interface ProxyConfig {
  * Passed through handlers to provide access to config and auth.
  */
 export interface RequestContext {
-  config: ProxyConfig;
+  config: EffectiveConfig;
   adoAuthHeader: string;
 }
 

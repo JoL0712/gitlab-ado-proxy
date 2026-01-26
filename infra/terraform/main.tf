@@ -221,13 +221,10 @@ resource "aws_lambda_function" "proxy" {
   environment {
     variables = merge(
       {
-        ADO_BASE_URL    = var.ado_base_url
         ADO_API_VERSION = var.ado_api_version
         NODE_ENV        = var.environment
       },
-      var.oauth_client_id != "" ? { OAUTH_CLIENT_ID = var.oauth_client_id } : {},
       var.oauth_client_secret != "" ? { OAUTH_CLIENT_SECRET = var.oauth_client_secret } : {},
-      var.allowed_projects != "" ? { ALLOWED_PROJECTS = var.allowed_projects } : {},
       # Storage configuration.
       var.enable_dynamodb_storage ? {
         STORAGE_TYPE       = "dynamodb"

@@ -1,19 +1,6 @@
 ###############################################################################
-# Required Variables
-###############################################################################
-
-variable "ado_base_url" {
-  description = "Azure DevOps organization URL (e.g., https://dev.azure.com/org). The proxy is project-agnostic and uses repository GUIDs."
-  type        = string
-
-  validation {
-    condition     = can(regex("^https://", var.ado_base_url))
-    error_message = "ADO base URL must start with https://"
-  }
-}
-
-###############################################################################
 # Optional Variables with Defaults
+# Org and allowed projects come from OAuth tokens only; no ado_base_url or allowed_projects.
 ###############################################################################
 
 variable "aws_region" {
@@ -45,24 +32,11 @@ variable "ado_api_version" {
   default     = "7.1"
 }
 
-variable "oauth_client_id" {
-  description = "OAuth client ID for validating OAuth requests (optional, recommended for security)"
-  type        = string
-  default     = ""
-  sensitive   = false
-}
-
 variable "oauth_client_secret" {
   description = "OAuth client secret for validating token exchange (optional, recommended for security)"
   type        = string
   default     = ""
   sensitive   = true
-}
-
-variable "allowed_projects" {
-  description = "Comma-separated list of allowed ADO project names. If set, only repositories from these projects will be accessible. If empty, all projects are accessible."
-  type        = string
-  default     = ""
 }
 
 ###############################################################################

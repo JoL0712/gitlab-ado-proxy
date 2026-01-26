@@ -77,9 +77,12 @@ A cloud-agnostic middleware that emulates GitLab's REST API and proxies requests
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /oauth/authorize` | OAuth authorization endpoint (shows authorization form) |
-| `POST /oauth/authorize` | Handles authorization form submission |
-| `POST /oauth/token` | Token exchange endpoint (exchanges authorization code for access token) |
+| `GET /oauth/authorize` | Step 1: OAuth authorization — enter PAT for org (client_id = org name) |
+| `POST /oauth/authorize` | Validates PAT via ADO Projects API, shows project-selection form |
+| `POST /oauth/authorize/confirm` | Step 2: Confirm selected projects, create proxy token, redirect with code |
+| `POST /oauth/token` | Exchanges authorization code for proxy access token (not the raw PAT) |
+
+The value sent as `client_id` in OAuth is the **Azure DevOps organization name**. The proxy returns a **proxy token** (`glpat-oauth-...`) that carries org and user-selected projects; the raw PAT is never returned to the client.
 
 ### Instance Information
 
@@ -153,10 +156,9 @@ Create a `.env` file in the project root:
 cp .env.example .env
 ```
 
-Then edit `.env` with your values:
+Then edit `.env` with your values. Org and projects come from OAuth tokens; no `ADO_BASE_URL` or `ALLOWED_PROJECTS`:
 
 ```env
-ADO_BASE_URL=https://dev.azure.com/your-org
 ADO_API_VERSION=7.1
 PORT=3000
 ```
@@ -165,7 +167,6 @@ PORT=3000
 
 **PowerShell:**
 ```powershell
-$env:ADO_BASE_URL="https://dev.azure.com/your-org"
 $env:ADO_API_VERSION="7.1"
 $env:PORT="3000"
 npm run dev
@@ -173,7 +174,6 @@ npm run dev
 
 **Command Prompt (CMD):**
 ```cmd
-set ADO_BASE_URL=https://dev.azure.com/your-org
 set ADO_API_VERSION=7.1
 set PORT=3000
 npm run dev
@@ -182,7 +182,6 @@ npm run dev
 **Option 3: Using command line (Linux/Mac)**
 
 ```bash
-export ADO_BASE_URL="https://dev.azure.com/your-org"
 export ADO_API_VERSION="7.1"
 export PORT=3000
 npm run dev
@@ -194,12 +193,7 @@ npm run dev
 npm run dev
 ```
 
-3. Test the proxy:
-
-```bash
-curl -H "PRIVATE-TOKEN: your-ado-pat" \
-  http://localhost:3000/api/v4/projects/your-repo-id
-```
+3. Test the proxy: use an OAuth-issued proxy token or a project token (see [Authentication](#authentication)). Raw PATs are not accepted.
 
 ### Building
 
@@ -209,44 +203,22 @@ npm run build
 
 ## Authentication
 
-The proxy converts GitLab's `PRIVATE-TOKEN` header to Azure DevOps Basic authentication:
+Only **OAuth-issued proxy tokens** and **project access tokens** (created via the API when using an OAuth token) are accepted. Raw Azure DevOps PATs are not accepted for API or Git requests.
 
-- **GitLab**: `PRIVATE-TOKEN: <your-ado-pat>`
-- **Converted to ADO**: `Authorization: Basic base64(:PAT)`
+- **OAuth flow**: `client_id` is the ADO organization name. The user enters a PAT, selects projects, and receives a proxy token (`glpat-oauth-...`) that carries org and allowed projects.
+- **Project tokens**: Created with `POST /api/v4/projects/:id/access_tokens` when using an OAuth token; they store the same org and allowed projects and are used as `glpat-*`.
 
-Your Azure DevOps Personal Access Token (PAT) should have appropriate permissions:
-
-- **Code**: Read (for projects and branches)
-- **Code**: Write (for creating pull requests)
+Credentials are sent as GitLab-style `PRIVATE-TOKEN` or `Authorization: Bearer <token>` and converted to ADO Basic auth under the hood using the stored PAT.
 
 ## Access Control
 
-You can limit which Azure DevOps projects are accessible through the proxy using the `ALLOWED_PROJECTS` environment variable. This is useful for:
+Organization and allowed projects are **per-token** and come from OAuth only:
 
-- Restricting access to specific projects for security
-- Reducing scope when you only need access to certain repositories
-- Multi-tenant deployments where different users have access to different projects
+- During OAuth, the user selects which ADO projects the token may access (or all if none chosen).
+- That set is stored with the proxy token and used for all API and Git requests made with that token.
+- Project tokens created via the API inherit the creating user’s org and allowed projects.
 
-### Configuration
-
-Set the `ALLOWED_PROJECTS` environment variable to a comma-separated list of project names:
-
-```bash
-# Single project
-ALLOWED_PROJECTS=MyProject
-
-# Multiple projects
-ALLOWED_PROJECTS=Project1,Project2,Another Project
-```
-
-If `ALLOWED_PROJECTS` is not set or is empty, all projects in the organization are accessible.
-
-### Behavior
-
-When `ALLOWED_PROJECTS` is configured:
-- `GET /api/v4/projects` only returns repositories from allowed projects
-- All repository operations (branches, commits, files, etc.) are blocked for repositories outside allowed projects
-- Requests to restricted repositories return a 404 "Not Found" error
+There is no env-based `ADO_BASE_URL` or `ALLOWED_PROJECTS`; everything is derived from the token.
 
 ## AWS Deployment
 
@@ -257,12 +229,12 @@ cd infra/terraform
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-Edit `terraform.tfvars`:
+Edit `terraform.tfvars`. Org and projects are per-token (OAuth); no `ado_base_url` or `allowed_projects`:
 
 ```hcl
-ado_base_url = "https://dev.azure.com/your-org"
 aws_region   = "us-east-1"
 environment  = "prod"
+oauth_client_secret = "your-secret"   # optional, for token exchange
 ```
 
 ### 2. Deploy
@@ -288,33 +260,24 @@ terraform output function_url
    terraform output function_url
    ```
 
-2. In Cursor Cloud, go to Integrations → GitLab Self-Hosted
+2. In Cursor Cloud, go to Integrations → GitLab Self-Hosted.
 
-3. Fill in the form:
+3. Configure:
    - **GitLab Hostname**: Your proxy URL (e.g., `https://your-function-url.lambda-url.us-east-1.on.aws`)
-   - **Application ID**: The value you set in `OAUTH_CLIENT_ID` environment variable (or any value if not set)
-   - **Secret**: The value you set in `OAUTH_CLIENT_SECRET` environment variable (or any value if not set)
+   - **Application ID**: Your **Azure DevOps organization name** (this is sent as `client_id` in OAuth)
+   - **Secret**: Optional; set `OAUTH_CLIENT_SECRET` on the proxy and use the same value here to protect the token exchange
 
-   **Security Note**: For production, set `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` environment variables to restrict OAuth access. If these are not set, any client_id and client_secret will be accepted.
+4. Click "Register". Cursor redirects to the proxy’s authorization page.
 
-4. Click "Register" - Cursor will redirect you to the authorization page
+5. **Step 1**: Enter your Azure DevOps PAT for that org. The proxy validates it with the ADO Projects API.
 
-5. Enter your Azure DevOps Personal Access Token (PAT) in the authorization form
+6. **Step 2**: Choose which projects the token may access (or leave all selected), then click "Authorize". The proxy creates a proxy token and redirects back with an authorization code.
 
-6. Click "Authorize" - Cursor will complete the OAuth flow and use the token for API calls
+7. Cursor exchanges the code for an access token. The token is a proxy token (`glpat-oauth-...`), not the raw PAT. All API and Git requests use that token; org and projects are taken from it.
 
-### Option 2: Direct API Token
+### Option 2: Project or OAuth tokens only
 
-You can also use the proxy directly with the `PRIVATE-TOKEN` header:
-
-```bash
-curl -H "PRIVATE-TOKEN: your-ado-pat" \
-  https://your-function-url.lambda-url.us-east-1.on.aws/api/v4/projects/your-repo-id
-```
-
-**Note**: Your Azure DevOps PAT should have appropriate permissions:
-- **Code**: Read (for projects and branches)
-- **Code**: Write (for creating pull requests)
+Use the proxy with `PRIVATE-TOKEN` or `Authorization: Bearer` only when the value is an OAuth-issued proxy token or a project token created via the API. Raw Azure DevOps PATs are rejected.
 
 ## Environment Variables
 
@@ -322,12 +285,11 @@ curl -H "PRIVATE-TOKEN: your-ado-pat" \
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ADO_BASE_URL` | Azure DevOps organization URL (project-agnostic) | Required |
 | `ADO_API_VERSION` | Azure DevOps API version | `7.1` |
-| `ALLOWED_PROJECTS` | Comma-separated list of allowed ADO project names. If set, only repositories from these projects will be accessible. | None (all projects) |
-| `OAUTH_CLIENT_ID` | OAuth client ID for validating OAuth requests (optional, recommended for security) | None (accepts any) |
-| `OAUTH_CLIENT_SECRET` | OAuth client secret for validating token exchange (optional, recommended for security) | None (accepts any) |
+| `OAUTH_CLIENT_SECRET` | OAuth client secret for token exchange (optional, recommended for security) | None (accepts any) |
 | `PORT` | Local server port (Node.js only) | `3000` |
+
+Org and allowed projects are not configured via env; they come from each token (OAuth or project token). The OAuth `client_id` is always the ADO organization name.
 
 ### Storage Configuration
 

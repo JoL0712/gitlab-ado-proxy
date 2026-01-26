@@ -1,12 +1,8 @@
 # Example Terraform variables file.
 # Copy this to terraform.tfvars and customize for your deployment.
-
-###############################################################################
-# Required Configuration
-###############################################################################
-
-# Azure DevOps organization URL (project-agnostic).
-ado_base_url = "https://dev.azure.com/your-org"
+#
+# Org and allowed projects are determined by OAuth: client_id is the ADO org name,
+# and users select projects during authorization. No ado_base_url or allowed_projects.
 
 ###############################################################################
 # Optional Configuration
@@ -21,16 +17,8 @@ environment = "prod"
 # Azure DevOps API version.
 ado_api_version = "7.1"
 
-# OAuth configuration (optional, but recommended for security).
-# If set, only requests with matching client_id and client_secret will be allowed.
-oauth_client_id     = ""
+# OAuth client secret for token exchange (optional, recommended for security).
 oauth_client_secret = ""
-
-# Access control configuration (optional).
-# Comma-separated list of allowed ADO project names.
-# If set, only repositories from these projects will be accessible.
-# If empty, all projects are accessible.
-allowed_projects = ""
 
 # Lambda configuration.
 lambda_timeout = 30
