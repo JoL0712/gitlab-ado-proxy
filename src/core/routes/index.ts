@@ -11,3 +11,4 @@ export { registerAccessTokens } from './access-tokens.js';
 export { registerRepository } from './repository.js';
 export { registerMisc } from './misc.js';
 export { registerGit } from './git.js';
+export { registerRedirects } from './redirects.js';

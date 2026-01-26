@@ -14,6 +14,7 @@ import {
   registerRepository,
   registerMisc,
   registerGit,
+  registerRedirects,
 } from './routes/index.js';
 import type { Env, OAuthState } from './routes/env.js';
 import type { ProxyConfig } from './types.js';
@@ -48,6 +49,9 @@ export function createApp(config: ProxyConfig): Hono<Env> {
   registerRepository(app);
   registerMisc(app);
   registerGit(app);
+
+  // Web UI redirects (must be last due to catch-all patterns).
+  registerRedirects(app);
 
   return app;
 }
