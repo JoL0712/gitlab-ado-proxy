@@ -22,12 +22,19 @@ async function extractGitAuth(c: Context<Env>): Promise<{
   }
 
   let token: string | null = null;
+  let username: string | null = null;
+
   if (authHeader.toLowerCase().startsWith('basic ')) {
     try {
       const base64Credentials = authHeader.substring(6).trim();
       const decoded = Buffer.from(base64Credentials, 'base64').toString('utf-8');
       const colonIndex = decoded.indexOf(':');
-      token = colonIndex !== -1 ? decoded.substring(colonIndex + 1) : decoded;
+      if (colonIndex !== -1) {
+        username = decoded.substring(0, colonIndex);
+        token = decoded.substring(colonIndex + 1);
+      } else {
+        token = decoded;
+      }
     } catch (e) {
       console.warn('[Git Auth] Failed to decode Basic auth:', e);
       return null;
@@ -79,7 +86,19 @@ async function extractGitAuth(c: Context<Env>): Promise<{
     };
   }
 
-  // Raw PAT is not accepted for Git.
+  // Raw Azure DevOps PAT: username must be the organization name.
+  if (username && username.trim() !== '') {
+    const orgName = username.trim();
+    console.log('[Git Auth] Using raw ADO PAT with org:', { orgName });
+    return {
+      adoAuthHeader: MappingService.convertAuth(token),
+      adoBaseUrl: `https://dev.azure.com/${encodeURIComponent(orgName)}`,
+      // Allow all projects - the PAT's permissions will restrict access.
+      allowedProjects: [],
+    };
+  }
+
+  console.warn('[Git Auth] Raw PAT provided without organization name in username field.');
   return null;
 }
 

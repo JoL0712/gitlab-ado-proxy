@@ -115,16 +115,17 @@ export function applyMiddleware(app: Hono<Env>, config: ProxyConfig): void {
     // Support multiple authentication methods:
     // 1. PRIVATE-TOKEN header (GitLab style)
     // 2. Bearer token (OAuth style)
-    // 3. Basic auth (git client style) - may contain glpat token
+    // 3. Basic auth (git client style) - may contain glpat token or raw ADO PAT
     const privateToken = c.req.header('PRIVATE-TOKEN');
     const authHeader = c.req.header('Authorization');
     let gitlabToken = privateToken;
+    let basicAuthUsername: string | null = null;
 
     if (!gitlabToken && authHeader) {
       if (authHeader.startsWith('Bearer ')) {
         gitlabToken = authHeader.replace(/^Bearer\s+/i, '');
       } else if (authHeader.toLowerCase().startsWith('basic ')) {
-        // Basic auth: base64 of "username:password" where password might be glpat-* token.
+        // Basic auth: base64 of "username:password" where password might be glpat-* token or raw ADO PAT.
         try {
           const base64Credentials = authHeader.substring(6).trim();
           // Use Buffer.from for Node.js compatibility.
@@ -134,11 +135,12 @@ export function applyMiddleware(app: Hono<Env>, config: ProxyConfig): void {
             decodedLength: decoded.length,
             hasColon: decoded.includes(':'),
           });
-          // Format could be ":PAT", "user:PAT", "git:PAT", etc.
+          // Format could be ":PAT", "user:PAT", "git:PAT", "orgname:ADO_PAT", etc.
           const colonIndex = decoded.indexOf(':');
           if (colonIndex !== -1) {
             const username = decoded.substring(0, colonIndex);
             const password = decoded.substring(colonIndex + 1);
+            basicAuthUsername = username;
             // Use the password as the token (it might be a glpat or regular PAT).
             gitlabToken = password;
             console.log('[Auth] Extracted token from Basic auth:', {
@@ -259,10 +261,22 @@ export function applyMiddleware(app: Hono<Env>, config: ProxyConfig): void {
           500
         );
       }
+    } else if (basicAuthUsername && basicAuthUsername.trim() !== '') {
+      // Raw Azure DevOps PAT with organization name in username field.
+      const orgName = basicAuthUsername.trim();
+      console.log('[Auth] Using raw ADO PAT with org:', { orgName });
+      adoAuthHeader = MappingService.convertAuth(gitlabToken);
+      effectiveConfig = {
+        ...config,
+        adoBaseUrl: `https://dev.azure.com/${encodeURIComponent(orgName)}`,
+        // Allow all projects - the PAT's permissions will restrict access.
+        allowedProjects: [],
+      };
+      tokenSource = 'RawADOPAT';
     } else {
-      // Raw PAT is no longer accepted.
-      console.warn('[Auth] Raw PAT not accepted; use OAuth or project tokens.');
-      c.header('WWW-Authenticate', 'Bearer error="invalid_token", error_description="Only OAuth and project tokens are accepted"');
+      // Raw PAT without organization name is not accepted.
+      console.warn('[Auth] Raw PAT not accepted without organization name; use OAuth, project tokens, or provide org name as username.');
+      c.header('WWW-Authenticate', 'Basic realm="Azure DevOps", error="invalid_token", error_description="Provide organization name as username with ADO PAT as password"');
       c.header('X-Require-Reauth', 'true');
       return c.json({ message: '401 Unauthorized' }, 401);
     }
