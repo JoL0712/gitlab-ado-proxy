@@ -1,5 +1,8 @@
 /**
  * Web UI redirects: Redirect GitLab-style URLs to Azure DevOps.
+ * 
+ * Maintains a persistent mapping of namespace/repo -> org name so users
+ * don't need to provide the org name on every request after the first time.
  */
 
 import { Hono } from 'hono';
@@ -10,9 +13,30 @@ import type { Env } from './env.js';
 import type { OAuthTokenData, StoredAccessToken } from '../types.js';
 
 /**
- * Extract auth info from request (similar to git.ts but for web redirects).
+ * Get the cached org name for a namespace/project path.
  */
-async function extractWebAuth(c: any): Promise<{
+async function getCachedOrgMapping(namespace: string, project: string): Promise<string | null> {
+  const storage = getStorage();
+  const key = `org_mapping:${namespace.toLowerCase()}/${project.toLowerCase()}`;
+  const orgName = await storage.get<string>(key);
+  return orgName;
+}
+
+/**
+ * Store the org name mapping for a namespace/project path.
+ */
+async function storeOrgMapping(namespace: string, project: string, orgName: string): Promise<void> {
+  const storage = getStorage();
+  const key = `org_mapping:${namespace.toLowerCase()}/${project.toLowerCase()}`;
+  await storage.set(key, orgName);
+  console.log('[Org Mapping] Stored mapping:', { namespace, project, orgName });
+}
+
+/**
+ * Extract auth info from request (similar to git.ts but for web redirects).
+ * If cachedOrgName is provided, use it instead of requiring username.
+ */
+async function extractWebAuth(c: any, cachedOrgName?: string | null): Promise<{
   adoAuthHeader: string;
   adoBaseUrl: string;
   orgName: string;
@@ -87,9 +111,9 @@ async function extractWebAuth(c: any): Promise<{
     };
   }
 
-  // Raw ADO PAT with org name as username.
-  if (username && username.trim() !== '') {
-    const orgName = username.trim();
+  // Raw ADO PAT: try cached org name first, then username.
+  const orgName = cachedOrgName || (username && username.trim() !== '' ? username.trim() : null);
+  if (orgName) {
     return {
       adoAuthHeader: MappingService.convertAuth(token),
       adoBaseUrl: `https://dev.azure.com/${encodeURIComponent(orgName)}`,
@@ -144,6 +168,47 @@ async function resolveProjectName(
   return null;
 }
 
+/**
+ * Helper to handle auth and redirect with org mapping caching.
+ */
+async function handleRedirect(
+  c: any,
+  namespace: string,
+  project: string,
+  buildAdoUrl: (orgName: string, actualProjectName: string) => string
+): Promise<Response> {
+  // Check for cached org mapping.
+  const cachedOrg = await getCachedOrgMapping(namespace, project);
+
+  // Try to extract auth (use cached org if available).
+  const auth = await extractWebAuth(c, cachedOrg);
+
+  if (!auth) {
+    // Prompt for credentials.
+    const message = cachedOrg
+      ? 'Authentication required. Enter any username and your ADO PAT as password.'
+      : 'Authentication required. Use your ADO org name as username and PAT as password.';
+    return c.text(message, 401, {
+      'WWW-Authenticate': 'Basic realm="Azure DevOps"',
+    });
+  }
+
+  // Resolve the actual project name.
+  const actualProjectName = await resolveProjectName(namespace, auth.adoAuthHeader, auth.adoBaseUrl);
+  if (!actualProjectName) {
+    return c.text(`Project not found: ${namespace}`, 404);
+  }
+
+  // Store org mapping if we don't have it cached.
+  if (!cachedOrg) {
+    await storeOrgMapping(namespace, project, auth.orgName);
+  }
+
+  // Build and redirect to ADO URL.
+  const adoUrl = buildAdoUrl(auth.orgName, actualProjectName);
+  return c.redirect(adoUrl);
+}
+
 export function registerRedirects(app: Hono<Env>): void {
   // Redirect: /:namespace/:project/-/merge_requests/:iid -> ADO PR page.
   app.get('/:namespace/:project/-/merge_requests/:iid', async (c) => {
@@ -151,30 +216,11 @@ export function registerRedirects(app: Hono<Env>): void {
     const project = c.req.param('project');
     const iid = c.req.param('iid');
 
-    const auth = await extractWebAuth(c);
-
-    if (!auth) {
-      // Prompt for credentials.
-      return c.text('Authentication required. Use your ADO org name as username and PAT as password.', 401, {
-        'WWW-Authenticate': 'Basic realm="Azure DevOps"',
-      });
-    }
-
-    // Resolve the actual project name.
-    const actualProjectName = await resolveProjectName(namespace, auth.adoAuthHeader, auth.adoBaseUrl);
-    if (!actualProjectName) {
-      return c.text(`Project not found: ${namespace}`, 404);
-    }
-
-    // Build the Azure DevOps PR URL.
-    const adoUrl = `https://dev.azure.com/${encodeURIComponent(auth.orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}/pullrequest/${iid}`;
-
-    console.log('[Redirect] Merge request redirect:', {
-      from: `/${namespace}/${project}/-/merge_requests/${iid}`,
-      to: adoUrl,
+    return handleRedirect(c, namespace, project, (orgName, actualProjectName) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}/pullrequest/${iid}`;
+      console.log('[Redirect] Merge request:', { from: `/${namespace}/${project}/-/merge_requests/${iid}`, to: url });
+      return url;
     });
-
-    return c.redirect(adoUrl);
   });
 
   // Redirect: /:namespace/:project (project/repo page) -> ADO repo page.
@@ -182,32 +228,16 @@ export function registerRedirects(app: Hono<Env>): void {
     const namespace = c.req.param('namespace');
     const project = c.req.param('project');
 
-    // Skip if this looks like an API or git request.
+    // Skip if this looks like an API or special request.
     if (namespace === 'api' || namespace === 'oauth' || project === 'info') {
       return c.notFound();
     }
 
-    const auth = await extractWebAuth(c);
-
-    if (!auth) {
-      return c.text('Authentication required. Use your ADO org name as username and PAT as password.', 401, {
-        'WWW-Authenticate': 'Basic realm="Azure DevOps"',
-      });
-    }
-
-    const actualProjectName = await resolveProjectName(namespace, auth.adoAuthHeader, auth.adoBaseUrl);
-    if (!actualProjectName) {
-      return c.text(`Project not found: ${namespace}`, 404);
-    }
-
-    const adoUrl = `https://dev.azure.com/${encodeURIComponent(auth.orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}`;
-
-    console.log('[Redirect] Repository redirect:', {
-      from: `/${namespace}/${project}`,
-      to: adoUrl,
+    return handleRedirect(c, namespace, project, (orgName, actualProjectName) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}`;
+      console.log('[Redirect] Repository:', { from: `/${namespace}/${project}`, to: url });
+      return url;
     });
-
-    return c.redirect(adoUrl);
   });
 
   // Redirect: /:namespace/:project/-/commit/:sha -> ADO commit page.
@@ -216,27 +246,11 @@ export function registerRedirects(app: Hono<Env>): void {
     const project = c.req.param('project');
     const sha = c.req.param('sha');
 
-    const auth = await extractWebAuth(c);
-
-    if (!auth) {
-      return c.text('Authentication required. Use your ADO org name as username and PAT as password.', 401, {
-        'WWW-Authenticate': 'Basic realm="Azure DevOps"',
-      });
-    }
-
-    const actualProjectName = await resolveProjectName(namespace, auth.adoAuthHeader, auth.adoBaseUrl);
-    if (!actualProjectName) {
-      return c.text(`Project not found: ${namespace}`, 404);
-    }
-
-    const adoUrl = `https://dev.azure.com/${encodeURIComponent(auth.orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}/commit/${sha}`;
-
-    console.log('[Redirect] Commit redirect:', {
-      from: `/${namespace}/${project}/-/commit/${sha}`,
-      to: adoUrl,
+    return handleRedirect(c, namespace, project, (orgName, actualProjectName) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}/commit/${sha}`;
+      console.log('[Redirect] Commit:', { from: `/${namespace}/${project}/-/commit/${sha}`, to: url });
+      return url;
     });
-
-    return c.redirect(adoUrl);
   });
 
   // Redirect: /:namespace/:project/-/tree/:ref -> ADO branch/tree page.
@@ -245,27 +259,11 @@ export function registerRedirects(app: Hono<Env>): void {
     const project = c.req.param('project');
     const ref = c.req.param('ref');
 
-    const auth = await extractWebAuth(c);
-
-    if (!auth) {
-      return c.text('Authentication required. Use your ADO org name as username and PAT as password.', 401, {
-        'WWW-Authenticate': 'Basic realm="Azure DevOps"',
-      });
-    }
-
-    const actualProjectName = await resolveProjectName(namespace, auth.adoAuthHeader, auth.adoBaseUrl);
-    if (!actualProjectName) {
-      return c.text(`Project not found: ${namespace}`, 404);
-    }
-
-    const adoUrl = `https://dev.azure.com/${encodeURIComponent(auth.orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}?version=GB${encodeURIComponent(ref)}`;
-
-    console.log('[Redirect] Tree redirect:', {
-      from: `/${namespace}/${project}/-/tree/${ref}`,
-      to: adoUrl,
+    return handleRedirect(c, namespace, project, (orgName, actualProjectName) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}?version=GB${encodeURIComponent(ref)}`;
+      console.log('[Redirect] Tree:', { from: `/${namespace}/${project}/-/tree/${ref}`, to: url });
+      return url;
     });
-
-    return c.redirect(adoUrl);
   });
 
   // Redirect: /:namespace/:project/-/blob/:ref/*path -> ADO file page.
@@ -274,37 +272,16 @@ export function registerRedirects(app: Hono<Env>): void {
     const project = c.req.param('project');
     const refAndPath = c.req.param('ref');
 
-    const auth = await extractWebAuth(c);
-
-    if (!auth) {
-      return c.text('Authentication required. Use your ADO org name as username and PAT as password.', 401, {
-        'WWW-Authenticate': 'Basic realm="Azure DevOps"',
-      });
-    }
-
-    const actualProjectName = await resolveProjectName(namespace, auth.adoAuthHeader, auth.adoBaseUrl);
-    if (!actualProjectName) {
-      return c.text(`Project not found: ${namespace}`, 404);
-    }
-
-    // The ref might include the path (e.g., "main/src/file.ts").
-    // ADO URL format: ?path=/src/file.ts&version=GBmain
+    // Parse ref and path from combined param.
     const slashIndex = refAndPath.indexOf('/');
-    let ref = refAndPath;
-    let path = '';
-    if (slashIndex !== -1) {
-      ref = refAndPath.substring(0, slashIndex);
-      path = refAndPath.substring(slashIndex);
-    }
+    const ref = slashIndex !== -1 ? refAndPath.substring(0, slashIndex) : refAndPath;
+    const path = slashIndex !== -1 ? refAndPath.substring(slashIndex) : '';
 
-    const adoUrl = `https://dev.azure.com/${encodeURIComponent(auth.orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}?path=${encodeURIComponent(path)}&version=GB${encodeURIComponent(ref)}`;
-
-    console.log('[Redirect] Blob redirect:', {
-      from: `/${namespace}/${project}/-/blob/${refAndPath}`,
-      to: adoUrl,
+    return handleRedirect(c, namespace, project, (orgName, actualProjectName) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}?path=${encodeURIComponent(path)}&version=GB${encodeURIComponent(ref)}`;
+      console.log('[Redirect] Blob:', { from: `/${namespace}/${project}/-/blob/${refAndPath}`, to: url });
+      return url;
     });
-
-    return c.redirect(adoUrl);
   });
 
   // Redirect: /:namespace/:project/-/branches -> ADO branches page.
@@ -312,27 +289,11 @@ export function registerRedirects(app: Hono<Env>): void {
     const namespace = c.req.param('namespace');
     const project = c.req.param('project');
 
-    const auth = await extractWebAuth(c);
-
-    if (!auth) {
-      return c.text('Authentication required. Use your ADO org name as username and PAT as password.', 401, {
-        'WWW-Authenticate': 'Basic realm="Azure DevOps"',
-      });
-    }
-
-    const actualProjectName = await resolveProjectName(namespace, auth.adoAuthHeader, auth.adoBaseUrl);
-    if (!actualProjectName) {
-      return c.text(`Project not found: ${namespace}`, 404);
-    }
-
-    const adoUrl = `https://dev.azure.com/${encodeURIComponent(auth.orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}/branches`;
-
-    console.log('[Redirect] Branches redirect:', {
-      from: `/${namespace}/${project}/-/branches`,
-      to: adoUrl,
+    return handleRedirect(c, namespace, project, (orgName, actualProjectName) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}/branches`;
+      console.log('[Redirect] Branches:', { from: `/${namespace}/${project}/-/branches`, to: url });
+      return url;
     });
-
-    return c.redirect(adoUrl);
   });
 
   // Redirect: /:namespace/:project/-/compare/:refs -> ADO compare page.
@@ -341,29 +302,13 @@ export function registerRedirects(app: Hono<Env>): void {
     const project = c.req.param('project');
     const refs = c.req.param('refs');
 
-    const auth = await extractWebAuth(c);
-
-    if (!auth) {
-      return c.text('Authentication required. Use your ADO org name as username and PAT as password.', 401, {
-        'WWW-Authenticate': 'Basic realm="Azure DevOps"',
-      });
-    }
-
-    const actualProjectName = await resolveProjectName(namespace, auth.adoAuthHeader, auth.adoBaseUrl);
-    if (!actualProjectName) {
-      return c.text(`Project not found: ${namespace}`, 404);
-    }
-
-    // GitLab format: base...head, ADO format: ?baseVersion=GBbase&targetVersion=GBhead
+    // GitLab format: base...head.
     const [base, head] = refs.includes('...') ? refs.split('...') : [refs, 'main'];
 
-    const adoUrl = `https://dev.azure.com/${encodeURIComponent(auth.orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}/branchCompare?baseVersion=GB${encodeURIComponent(base)}&targetVersion=GB${encodeURIComponent(head)}`;
-
-    console.log('[Redirect] Compare redirect:', {
-      from: `/${namespace}/${project}/-/compare/${refs}`,
-      to: adoUrl,
+    return handleRedirect(c, namespace, project, (orgName, actualProjectName) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualProjectName)}/_git/${encodeURIComponent(project)}/branchCompare?baseVersion=GB${encodeURIComponent(base)}&targetVersion=GB${encodeURIComponent(head)}`;
+      console.log('[Redirect] Compare:', { from: `/${namespace}/${project}/-/compare/${refs}`, to: url });
+      return url;
     });
-
-    return c.redirect(adoUrl);
   });
 }

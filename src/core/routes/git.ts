@@ -11,9 +11,29 @@ import { fetchRepositoryInfo } from '../helpers/repository.js';
 import type { Env } from './env.js';
 import type { OAuthTokenData, StoredAccessToken } from '../types.js';
 
-async function extractGitAuth(c: Context<Env>): Promise<{
+/**
+ * Get the cached org name for a namespace/project path.
+ */
+async function getCachedOrgMapping(namespace: string, project: string): Promise<string | null> {
+  const storage = getStorage();
+  const key = `org_mapping:${namespace.toLowerCase()}/${project.toLowerCase()}`;
+  return await storage.get<string>(key);
+}
+
+/**
+ * Store the org name mapping for a namespace/project path.
+ */
+async function storeOrgMapping(namespace: string, project: string, orgName: string): Promise<void> {
+  const storage = getStorage();
+  const key = `org_mapping:${namespace.toLowerCase()}/${project.toLowerCase()}`;
+  await storage.set(key, orgName);
+  console.log('[Git] Stored org mapping:', { namespace, project, orgName });
+}
+
+async function extractGitAuth(c: Context<Env>, cachedOrgName?: string | null): Promise<{
   adoAuthHeader: string;
   adoBaseUrl: string;
+  orgName: string;
   allowedProjects: string[];
 } | null> {
   const authHeader = c.req.header('Authorization');
@@ -72,6 +92,7 @@ async function extractGitAuth(c: Context<Env>): Promise<{
     return {
       adoAuthHeader: MappingService.convertAuth(oauthData.adoPat),
       adoBaseUrl: oauthData.adoBaseUrl,
+      orgName: oauthData.orgName,
       allowedProjects: oauthData.allowedProjects,
     };
   }
@@ -94,20 +115,24 @@ async function extractGitAuth(c: Context<Env>): Promise<{
     ) {
       return null;
     }
+    // Extract org name from adoBaseUrl.
+    const orgMatch = tokenData.adoBaseUrl.match(/dev\.azure\.com\/([^/]+)/);
     return {
       adoAuthHeader: MappingService.convertAuth(tokenData.adoPat),
       adoBaseUrl: tokenData.adoBaseUrl,
+      orgName: orgMatch ? orgMatch[1] : '',
       allowedProjects: tokenData.allowedProjects,
     };
   }
 
-  // Raw Azure DevOps PAT: username must be the organization name.
-  if (username && username.trim() !== '') {
-    const orgName = username.trim();
-    console.log('[Git Auth] Using raw ADO PAT with org:', { orgName });
+  // Raw Azure DevOps PAT: try cached org name first, then username.
+  const orgName = cachedOrgName || (username && username.trim() !== '' ? username.trim() : null);
+  if (orgName) {
+    console.log('[Git Auth] Using raw ADO PAT with org:', { orgName, source: cachedOrgName ? 'cached' : 'username' });
     return {
       adoAuthHeader: MappingService.convertAuth(token),
       adoBaseUrl: `https://dev.azure.com/${encodeURIComponent(orgName)}`,
+      orgName,
       // Allow all projects - the PAT's permissions will restrict access.
       allowedProjects: [],
     };
@@ -141,14 +166,18 @@ export function registerGit(app: Hono<Env>): void {
     const project = c.req.param('project');
     const service = c.req.query('service');
 
+    // Check for cached org mapping.
+    const cachedOrg = await getCachedOrgMapping(namespace, project);
+
     // Extract auth for Git HTTP (not handled by /api/v4/* middleware).
-    const gitAuth = await extractGitAuth(c);
+    const gitAuth = await extractGitAuth(c, cachedOrg);
 
     console.log('[Git Smart HTTP] info/refs request:', {
       namespace,
       project,
       service,
       hasAuth: !!gitAuth,
+      cachedOrg: cachedOrg ?? 'none',
     });
 
     // Check for authentication.
@@ -175,6 +204,11 @@ export function registerGit(app: Hono<Env>): void {
       if (!repoInfo) {
         console.log('[Git Smart HTTP] Repository not found:', { repoPath });
         return c.text('Repository not found', 404);
+      }
+
+      // Store org mapping if not already cached.
+      if (!cachedOrg && gitAuth.orgName) {
+        await storeOrgMapping(namespace, project, gitAuth.orgName);
       }
 
       const adoGitUrl = `${gitAuth.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/info/refs?service=${service}`;
@@ -215,8 +249,11 @@ export function registerGit(app: Hono<Env>): void {
     const namespace = c.req.param('namespace');
     const project = c.req.param('project');
 
+    // Check for cached org mapping.
+    const cachedOrg = await getCachedOrgMapping(namespace, project);
+
     // Extract auth for Git HTTP.
-    const gitAuth = await extractGitAuth(c);
+    const gitAuth = await extractGitAuth(c, cachedOrg);
 
     console.log('[Git Smart HTTP] git-upload-pack request:', {
       namespace,
@@ -242,6 +279,11 @@ export function registerGit(app: Hono<Env>): void {
 
       if (!repoInfo) {
         return c.text('Repository not found', 404);
+      }
+
+      // Store org mapping if not already cached.
+      if (!cachedOrg && gitAuth.orgName) {
+        await storeOrgMapping(namespace, project, gitAuth.orgName);
       }
 
       const adoGitUrl = `${gitAuth.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-upload-pack`;
@@ -283,8 +325,11 @@ export function registerGit(app: Hono<Env>): void {
     const namespace = c.req.param('namespace');
     const project = c.req.param('project');
 
+    // Check for cached org mapping.
+    const cachedOrg = await getCachedOrgMapping(namespace, project);
+
     // Extract auth for Git HTTP.
-    const gitAuth = await extractGitAuth(c);
+    const gitAuth = await extractGitAuth(c, cachedOrg);
 
     console.log('[Git Smart HTTP] git-receive-pack request:', {
       namespace,
@@ -310,6 +355,11 @@ export function registerGit(app: Hono<Env>): void {
 
       if (!repoInfo) {
         return c.text('Repository not found', 404);
+      }
+
+      // Store org mapping if not already cached.
+      if (!cachedOrg && gitAuth.orgName) {
+        await storeOrgMapping(namespace, project, gitAuth.orgName);
       }
 
       const adoGitUrl = `${gitAuth.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-receive-pack`;
