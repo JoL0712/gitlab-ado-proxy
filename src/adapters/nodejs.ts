@@ -17,12 +17,14 @@ function parseAllowedProjects(envVar?: string): string[] | undefined {
 }
 
 // Read configuration from environment variables.
+const isLocalDev = process.env.NODE_ENV !== 'production';
 const config = {
   adoBaseUrl: process.env.ADO_BASE_URL ?? 'https://dev.azure.com/org',
   adoApiVersion: process.env.ADO_API_VERSION ?? '7.1',
   oauthClientId: process.env.OAUTH_CLIENT_ID,
   oauthClientSecret: process.env.OAUTH_CLIENT_SECRET,
   allowedProjects: parseAllowedProjects(process.env.ALLOWED_PROJECTS),
+  requestLogPath: process.env.REQUEST_LOG_PATH ?? (isLocalDev ? '.data/requests.log' : undefined),
 };
 
 const port = parseInt(process.env.PORT ?? '3000', 10);
@@ -38,16 +40,27 @@ const allowedProjectsDisplay = config.allowedProjects
   ? config.allowedProjects.join(', ').substring(0, 40) 
   : 'All projects';
 
+const requestLogDisplay = config.requestLogPath ?? '-';
+
+// Banner inner width (chars between ║ and ║). All content lines must match this.
+const BANNER_W = 55;
+const pad = (s: string, n: number) => s.substring(0, n).padEnd(n);
+const borderTop = '╔' + '═'.repeat(BANNER_W) + '╗';
+const borderMid = '╠' + '═'.repeat(BANNER_W) + '╣';
+const borderBot = '╚' + '═'.repeat(BANNER_W) + '╝';
+const row = (s: string) => '║' + pad(s, BANNER_W) + '║';
+
 console.log(`
-╔═══════════════════════════════════════════════════════════╗
-║           GitLab-ADO Proxy Server                         ║
-╠═══════════════════════════════════════════════════════════╣
-║  Server:     http://localhost:${port.toString().padEnd(26)}║
-║  ADO Base:   ${config.adoBaseUrl.substring(0, 42).padEnd(42)}║
-║  API Ver:    ${config.adoApiVersion.padEnd(42)}║
-║  Storage:    ${storageConfig.type.padEnd(42)}║
-║  Projects:   ${allowedProjectsDisplay.padEnd(42)}║
-╚═══════════════════════════════════════════════════════════╝
+${borderTop}
+${row('           GitLab-ADO Proxy Server')}
+${borderMid}
+${row('  Server:     ' + pad(`http://localhost:${port}`, BANNER_W - 13))}
+${row('  ADO Base:   ' + pad(config.adoBaseUrl, BANNER_W - 13))}
+${row('  API Ver:    ' + pad(config.adoApiVersion, BANNER_W - 13))}
+${row('  Storage:    ' + pad(storageConfig.type, BANNER_W - 13))}
+${row('  Projects:   ' + pad(allowedProjectsDisplay, BANNER_W - 13))}
+${row('  Request log: ' + pad(requestLogDisplay, BANNER_W - 15))}
+${borderBot}
 `);
 
 serve({

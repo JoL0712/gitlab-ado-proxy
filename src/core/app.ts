@@ -1,3 +1,6 @@
+import { appendFile, mkdir, unlink } from 'fs/promises';
+import { dirname } from 'path';
+import { gunzipSync, inflateSync } from 'node:zlib';
 import { Hono, Context } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
@@ -41,7 +44,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     const start = Date.now();
     const { method, url } = c.req;
     const path = new URL(url).pathname;
-    
+
     console.log(`[REQUEST] ${method} ${path}`, {
       fullUrl: url,
       headers: {
@@ -50,12 +53,80 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         'authorization': c.req.header('authorization') ? 'present' : 'absent',
       },
     });
-    
+
     await next();
-    
+
     const duration = Date.now() - start;
     console.log(`[RESPONSE] ${method} ${path} -> ${c.res.status} (${duration}ms)`);
   });
+
+  // Middleware: Full request/response file logging (local development only).
+  // Log file is removed on first write after startup so each server run starts with a fresh file.
+  if (config.requestLogPath) {
+    const logPath = config.requestLogPath;
+    let dirEnsured = false;
+    let clearedOnStart = false;
+
+    function bodyForLog(
+      buf: ArrayBuffer,
+      contentType: string | undefined
+    ): string {
+      const ct = (contentType ?? '').toLowerCase();
+      const isBinary =
+        ct.includes('git-upload-pack') ||
+        ct.includes('git-receive-pack') ||
+        ct.includes('octet-stream');
+      if (isBinary || buf.byteLength === 0) {
+        return buf.byteLength === 0 ? '' : `<binary, ${buf.byteLength} bytes>`;
+      }
+      const decoded = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+      if (decoded.includes('\0')) {
+        return `<binary, ${buf.byteLength} bytes>`;
+      }
+      return decoded;
+    }
+
+    app.use('*', async (c, next) => {
+      const ts = new Date().toISOString();
+      const { method, url } = c.req;
+      const reqHeaders = Object.fromEntries(c.req.raw.headers.entries());
+      let reqBody: string;
+      try {
+        const reqBuf = await c.req.raw.clone().arrayBuffer();
+        reqBody = bodyForLog(reqBuf, c.req.header('Content-Type'));
+      } catch {
+        reqBody = '<missing>';
+      }
+      await next();
+      let resBody: string;
+      try {
+        const resBuf = await c.res.clone().arrayBuffer();
+        resBody = bodyForLog(resBuf, c.res.headers.get('Content-Type') ?? undefined);
+      } catch {
+        resBody = '<missing>';
+      }
+      if (!dirEnsured) {
+        await mkdir(dirname(logPath), { recursive: true });
+        dirEnsured = true;
+      }
+      if (!clearedOnStart) {
+        await unlink(logPath).catch(() => {});
+        clearedOnStart = true;
+      }
+      const entry = [
+        '',
+        `--- ${ts} ${method} ${url} ---`,
+        'REQUEST: ' + JSON.stringify({ method, url, headers: reqHeaders, body: reqBody }),
+        'RESPONSE: ' + JSON.stringify({
+          status: c.res.status,
+          headers: Object.fromEntries(c.res.headers.entries()),
+          body: resBody,
+        }),
+        '',
+      ].join('\n');
+      await appendFile(logPath, entry, 'utf-8');
+    });
+  }
 
   /**
    * Convert a string to URL-safe format for comparison.
@@ -389,14 +460,9 @@ export function createApp(config: ProxyConfig): Hono<Env> {
         authorizationValue: authHeader ? authHeader.substring(0, 20) + '...' : 'none',
         extractedToken: gitlabToken,
       });
-      return c.json(
-        {
-          error: 'Unauthorized',
-          message: 'PRIVATE-TOKEN header or Bearer token is required',
-          statusCode: 401,
-        },
-        401
-      );
+      c.header('WWW-Authenticate', 'Bearer error="invalid_token", error_description="Credentials required or invalid"');
+      c.header('X-Require-Reauth', 'true');
+      return c.json({ message: '401 Unauthorized' }, 401);
     }
 
     let adoAuthHeader: string;
@@ -418,14 +484,9 @@ export function createApp(config: ProxyConfig): Hono<Env> {
           console.warn('[Auth] Project access token not found in storage:', {
             tokenPrefix: gitlabToken.substring(0, 15) + '...',
           });
-          return c.json(
-            {
-              error: 'Unauthorized',
-              message: 'Invalid or expired project access token',
-              statusCode: 401,
-            },
-            401
-          );
+          c.header('WWW-Authenticate', 'Bearer error="invalid_token", error_description="Invalid or expired project access token"');
+          c.header('X-Require-Reauth', 'true');
+          return c.json({ message: '401 Unauthorized' }, 401);
         }
 
         // Look up the full token data.
@@ -439,14 +500,9 @@ export function createApp(config: ProxyConfig): Hono<Env> {
             tokenId: tokenLookup.tokenId,
             revoked: tokenData?.revoked,
           });
-          return c.json(
-            {
-              error: 'Unauthorized',
-              message: 'Project access token has been revoked',
-              statusCode: 401,
-            },
-            401
-          );
+          c.header('WWW-Authenticate', 'Bearer error="invalid_token", error_description="Project access token has been revoked"');
+          c.header('X-Require-Reauth', 'true');
+          return c.json({ message: '401 Unauthorized' }, 401);
         }
 
         // Check expiration.
@@ -456,14 +512,9 @@ export function createApp(config: ProxyConfig): Hono<Env> {
             tokenId: tokenLookup.tokenId,
             expiresAt: tokenData.expiresAt,
           });
-          return c.json(
-            {
-              error: 'Unauthorized',
-              message: 'Project access token has expired',
-              statusCode: 401,
-            },
-            401
-          );
+          c.header('WWW-Authenticate', 'Bearer error="invalid_token", error_description="Project access token has expired"');
+          c.header('X-Require-Reauth', 'true');
+          return c.json({ message: '401 Unauthorized' }, 401);
         }
 
         // Update last used timestamp.
@@ -4083,6 +4134,20 @@ export function createApp(config: ProxyConfig): Hono<Env> {
     }
   });
 
+  // Decompress request body when client sends gzip/deflate so ADO receives raw pkt-line.
+  function decodeGitBody(raw: ArrayBuffer, contentEncoding: string | undefined): ArrayBuffer {
+    if (!contentEncoding) {
+      return raw;
+    }
+    const enc = contentEncoding.toLowerCase().replace(/;.*/, '').trim();
+    if (enc !== 'gzip' && enc !== 'deflate') {
+      return raw;
+    }
+    const buf = Buffer.from(raw);
+    const decoded = enc === 'gzip' ? gunzipSync(buf) : inflateSync(buf);
+    return decoded.buffer.slice(decoded.byteOffset, decoded.byteOffset + decoded.byteLength);
+  }
+
   // POST /:namespace/:project/git-upload-pack - Git fetch/clone data.
   app.post('/:namespace/:project/git-upload-pack', async (c) => {
     const namespace = c.req.param('namespace');
@@ -4119,7 +4184,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       }
 
       const adoGitUrl = `${config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-upload-pack`;
-      const requestBody = await c.req.arrayBuffer();
+      const rawBody = await c.req.arrayBuffer();
+      const requestBody = decodeGitBody(rawBody, c.req.header('Content-Encoding') ?? undefined);
 
       const response = await fetch(adoGitUrl, {
         method: 'POST',
@@ -4186,7 +4252,8 @@ export function createApp(config: ProxyConfig): Hono<Env> {
       }
 
       const adoGitUrl = `${config.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-receive-pack`;
-      const requestBody = await c.req.arrayBuffer();
+      const rawBody = await c.req.arrayBuffer();
+      const requestBody = decodeGitBody(rawBody, c.req.header('Content-Encoding') ?? undefined);
 
       const response = await fetch(adoGitUrl, {
         method: 'POST',

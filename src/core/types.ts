@@ -409,6 +409,9 @@ export interface ProxyConfig {
   // If set, only repositories from these projects will be accessible.
   // If not set, all projects are accessible.
   allowedProjects?: string[];
+  // Optional: For local development only. When set, full request/response bodies are appended to this file.
+  // File is cleared when the server starts so each run gets a fresh log.
+  requestLogPath?: string;
 }
 
 /**
