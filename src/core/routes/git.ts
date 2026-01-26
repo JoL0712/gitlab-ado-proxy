@@ -18,6 +18,7 @@ async function extractGitAuth(c: Context<Env>): Promise<{
 } | null> {
   const authHeader = c.req.header('Authorization');
   if (!authHeader) {
+    console.log('[Git Auth] No Authorization header');
     return null;
   }
 
@@ -35,15 +36,29 @@ async function extractGitAuth(c: Context<Env>): Promise<{
       } else {
         token = decoded;
       }
+      console.log('[Git Auth] Decoded Basic auth:', {
+        hasUsername: !!username,
+        usernameLength: username?.length ?? 0,
+        tokenPrefix: token ? token.substring(0, 10) + '...' : 'none',
+        tokenLength: token?.length ?? 0,
+      });
     } catch (e) {
       console.warn('[Git Auth] Failed to decode Basic auth:', e);
       return null;
     }
   } else if (authHeader.startsWith('Bearer ')) {
     token = authHeader.substring(7);
+    console.log('[Git Auth] Bearer token:', {
+      tokenPrefix: token.substring(0, 10) + '...',
+      tokenLength: token.length,
+    });
+  } else {
+    console.log('[Git Auth] Unknown auth type:', authHeader.substring(0, 20));
+    return null;
   }
 
   if (!token || token.trim() === '') {
+    console.log('[Git Auth] Empty token');
     return null;
   }
 
@@ -98,7 +113,11 @@ async function extractGitAuth(c: Context<Env>): Promise<{
     };
   }
 
-  console.warn('[Git Auth] Raw PAT provided without organization name in username field.');
+  console.warn('[Git Auth] Raw PAT provided without organization name in username field:', {
+    hasUsername: !!username,
+    usernameValue: username ?? 'null',
+    tokenPrefix: token.substring(0, 10) + '...',
+  });
   return null;
 }
 
