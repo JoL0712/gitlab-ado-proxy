@@ -134,12 +134,12 @@ export async function fetchRepositoryInfo(
         repoPath: repoPathPart,
       });
 
-      const listUrl = MappingService.buildAdoUrl(
+      let listUrl = MappingService.buildAdoUrl(
         adoBaseUrl,
         `/${encodeURIComponent(actualProjectName)}/_apis/git/repositories`
       );
 
-      const listResponse = await fetch(listUrl, {
+      let listResponse = await fetch(listUrl, {
         method: 'GET',
         headers: {
           Authorization: adoAuthHeader,
@@ -164,6 +164,71 @@ export async function fetchRepositoryInfo(
             projectName: matchingRepo.project.name,
           });
           return { repo: matchingRepo, projectName: matchingRepo.project.name };
+        }
+      }
+
+      // If project lookup failed (404), try to find the actual project name from ADO.
+      // This handles cases where the URL uses a URL-safe name but the actual project has spaces.
+      if (!listResponse.ok) {
+        console.log('[fetchRepositoryInfo] Project not found, querying ADO for project list');
+
+        const projectsUrl = MappingService.buildAdoUrl(adoBaseUrl, '/_apis/projects');
+        const projectsResponse = await fetch(projectsUrl, {
+          method: 'GET',
+          headers: {
+            Authorization: adoAuthHeader,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (projectsResponse.ok) {
+          const projectsData = (await projectsResponse.json()) as { value: Array<{ name: string }> };
+
+          // Find project by URL-safe name match.
+          const matchingProject = projectsData.value.find(
+            (p) => toUrlSafe(p.name) === projectPathPart.toLowerCase()
+          );
+
+          if (matchingProject) {
+            console.log('[fetchRepositoryInfo] Found matching project from ADO:', {
+              urlSafeName: projectPathPart,
+              actualName: matchingProject.name,
+            });
+
+            // Now search for the repository in this project.
+            listUrl = MappingService.buildAdoUrl(
+              adoBaseUrl,
+              `/${encodeURIComponent(matchingProject.name)}/_apis/git/repositories`
+            );
+
+            listResponse = await fetch(listUrl, {
+              method: 'GET',
+              headers: {
+                Authorization: adoAuthHeader,
+                'Content-Type': 'application/json',
+              },
+            });
+
+            if (listResponse.ok) {
+              const data = (await listResponse.json()) as { value: ADORepository[] };
+
+              // Find repo by name or URL-safe name.
+              const matchingRepo = data.value.find(
+                (r) =>
+                  r.name.toLowerCase() === repoPathPart.toLowerCase() ||
+                  toUrlSafe(r.name) === repoPathPart.toLowerCase()
+              );
+
+              if (matchingRepo) {
+                console.log('[fetchRepositoryInfo] Found repository in matched project:', {
+                  repoId: matchingRepo.id,
+                  repoName: matchingRepo.name,
+                  projectName: matchingRepo.project.name,
+                });
+                return { repo: matchingRepo, projectName: matchingRepo.project.name };
+              }
+            }
+          }
         }
       }
 
