@@ -105,7 +105,7 @@ export function registerOauth(
     }
 
     const adoBaseUrl = `https://dev.azure.com/${normalizeOrgForUrl(clientId)}`;
-    const projectsUrl = MappingService.buildAdoUrl(adoBaseUrl, '/_apis/projects', '7.1');
+    const projectsUrl = MappingService.buildAdoUrl(adoBaseUrl, '/_apis/projects');
     const authHeader = MappingService.convertAuth(pat);
 
     const response = await fetch(projectsUrl, {

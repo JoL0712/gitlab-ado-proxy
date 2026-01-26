@@ -12,7 +12,6 @@ const host = process.env.HOST ?? '0.0.0.0';
 const port = parseInt(process.env.PORT ?? '3000', 10);
 
 const config = {
-  adoApiVersion: process.env.ADO_API_VERSION ?? '7.1',
   oauthClientSecret: process.env.OAUTH_CLIENT_SECRET,
   requestLogPath: process.env.REQUEST_LOG_PATH,
 };

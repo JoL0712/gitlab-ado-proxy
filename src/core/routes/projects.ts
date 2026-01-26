@@ -44,8 +44,7 @@ export function registerProjects(app: Hono<Env>): void {
         const projectFetches = ctx.config.allowedProjects.map(async (projectName) => {
           const reposUrl = MappingService.buildAdoUrl(
             ctx.config.adoBaseUrl,
-            `/${encodeURIComponent(projectName)}/_apis/git/repositories`,
-            ctx.config.adoApiVersion ?? '7.1'
+            `/${encodeURIComponent(projectName)}/_apis/git/repositories`
           );
 
           try {
@@ -100,8 +99,7 @@ export function registerProjects(app: Hono<Env>): void {
         // No project restrictions - fetch all repositories in the organization.
         const reposUrl = MappingService.buildAdoUrl(
           ctx.config.adoBaseUrl,
-          '/_apis/git/repositories',
-          ctx.config.adoApiVersion ?? '7.1'
+          '/_apis/git/repositories'
         );
 
         const response = await fetch(reposUrl, {

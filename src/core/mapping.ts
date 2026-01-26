@@ -1,3 +1,4 @@
+import { ADO_API_VERSION } from './constants.js';
 import type {
   GitLabProject,
   GitLabBranch,
@@ -178,8 +179,8 @@ export class MappingService {
   static buildAdoUrl(
     baseUrl: string,
     path: string,
-    apiVersion: string = '7.1',
-    projectName?: string
+    projectName?: string,
+    apiVersionOverride?: string
   ): string {
     // Ensure base URL doesn't have trailing slash.
     const base = baseUrl.replace(/\/$/, '');
@@ -197,6 +198,7 @@ export class MappingService {
     }
     
     // Add api-version query parameter.
+    const apiVersion = apiVersionOverride ?? ADO_API_VERSION;
     const separator = normalizedPath.includes('?') ? '&' : '?';
     return `${fullUrl}${separator}api-version=${apiVersion}`;
   }

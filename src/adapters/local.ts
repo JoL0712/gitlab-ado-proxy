@@ -6,13 +6,13 @@
 import 'dotenv/config';
 import { serve } from '@hono/node-server';
 import { createApp } from '../core/app.js';
+import { ADO_API_VERSION } from '../core/constants.js';
 import { getStorage, getStorageConfigFromEnv } from '../core/storage/index.js';
 
 // Read configuration from environment variables.
 // Org and allowed projects are per-token (OAuth or project token); not read from env.
 const isLocalDev = process.env.NODE_ENV !== 'production';
 const config = {
-  adoApiVersion: process.env.ADO_API_VERSION ?? '7.1',
   oauthClientSecret: process.env.OAUTH_CLIENT_SECRET,
   requestLogPath: process.env.REQUEST_LOG_PATH ?? (isLocalDev ? '.data/requests.log' : undefined),
 };
@@ -41,7 +41,7 @@ ${borderTop}
 ${row('           GitLab-ADO Proxy Server')}
 ${borderMid}
 ${row('  Server:       ' + pad(`http://localhost:${port}`, BANNER_W - 15))}
-${row('  API Ver:      ' + pad(config.adoApiVersion ?? '7.1', BANNER_W - 15))}
+${row('  API Ver:      ' + pad(ADO_API_VERSION, BANNER_W - 15))}
 ${row('  Storage:      ' + pad(storageConfig.type, BANNER_W - 15))}
 ${row('  Org/Projects: per-token (OAuth)')}
 ${row('  Request log:  ' + pad(requestLogDisplay, BANNER_W - 15))}

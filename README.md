@@ -152,7 +152,6 @@ cp .env.example .env
 Then edit `.env` with your values. Org and projects come from OAuth tokens.
 
 ```env
-ADO_API_VERSION=7.1
 PORT=3000
 ```
 
@@ -160,14 +159,12 @@ PORT=3000
 
 **PowerShell:**
 ```powershell
-$env:ADO_API_VERSION="7.1"
 $env:PORT="3000"
 npm run dev
 ```
 
 **Command Prompt (CMD):**
 ```cmd
-set ADO_API_VERSION=7.1
 set PORT=3000
 npm run dev
 ```
@@ -175,7 +172,6 @@ npm run dev
 **Option 3: Using command line (Linux/Mac)**
 
 ```bash
-export ADO_API_VERSION="7.1"
 export PORT=3000
 npm run dev
 ```
@@ -259,7 +255,6 @@ Use the proxy with `PRIVATE-TOKEN` or `Authorization: Bearer` only when the valu
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ADO_API_VERSION` | Azure DevOps API version | `7.1` |
 | `OAUTH_CLIENT_SECRET` | OAuth client secret for token exchange (optional, recommended for security) | None (accepts any) |
 | `HOST` | Bind address for production server (`server.ts`) | `0.0.0.0` |
 | `PORT` | Server port (Node.js adapters) | `3000` |

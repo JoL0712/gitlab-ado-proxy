@@ -9,7 +9,6 @@ import { MappingService } from '../mapping.js';
 import { getStorage } from '../storage/index.js';
 import { fetchRepositoryInfo } from '../helpers/repository.js';
 import type { Env } from './env.js';
-import type { ProxyConfig } from '../types.js';
 import type { OAuthTokenData, StoredAccessToken } from '../types.js';
 
 async function extractGitAuth(c: Context<Env>): Promise<{
@@ -97,7 +96,7 @@ function decodeGitBody(raw: ArrayBuffer, contentEncoding: string | undefined): A
   return decoded.buffer.slice(decoded.byteOffset, decoded.byteOffset + decoded.byteLength);
 }
 
-export function registerGit(app: Hono<Env>, config: ProxyConfig): void {
+export function registerGit(app: Hono<Env>): void {
   // GET /:namespace/:project/info/refs - Git discovery endpoint.
   app.get('/:namespace/:project/info/refs', async (c) => {
     const namespace = c.req.param('namespace');
@@ -132,7 +131,6 @@ export function registerGit(app: Hono<Env>, config: ProxyConfig): void {
         repoPath,
         gitAuth.adoAuthHeader,
         gitAuth.adoBaseUrl,
-        config.adoApiVersion ?? '7.1',
         gitAuth.allowedProjects
       );
 
@@ -201,7 +199,6 @@ export function registerGit(app: Hono<Env>, config: ProxyConfig): void {
         repoPath,
         gitAuth.adoAuthHeader,
         gitAuth.adoBaseUrl,
-        config.adoApiVersion ?? '7.1',
         gitAuth.allowedProjects
       );
 
@@ -270,7 +267,6 @@ export function registerGit(app: Hono<Env>, config: ProxyConfig): void {
         repoPath,
         gitAuth.adoAuthHeader,
         gitAuth.adoBaseUrl,
-        config.adoApiVersion ?? '7.1',
         gitAuth.allowedProjects
       );
 

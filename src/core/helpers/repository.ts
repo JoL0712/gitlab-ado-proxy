@@ -45,7 +45,6 @@ export async function fetchRepositoryInfo(
   repositoryId: string,
   adoAuthHeader: string,
   adoBaseUrl: string,
-  adoApiVersion: string,
   allowedProjects?: string[]
 ): Promise<{ repo: ADORepository; projectName: string } | null> {
   try {
@@ -106,8 +105,7 @@ export async function fetchRepositoryInfo(
       // Try to fetch using the actual project name first.
       let repoUrl = MappingService.buildAdoUrl(
         adoBaseUrl,
-        `/${encodeURIComponent(actualProjectName)}/_apis/git/repositories/${encodeURIComponent(repoPathPart)}`,
-        adoApiVersion
+        `/${encodeURIComponent(actualProjectName)}/_apis/git/repositories/${encodeURIComponent(repoPathPart)}`
       );
 
       console.log('[fetchRepositoryInfo] Fetching from project-level URL:', { url: repoUrl });
@@ -138,8 +136,7 @@ export async function fetchRepositoryInfo(
 
       const listUrl = MappingService.buildAdoUrl(
         adoBaseUrl,
-        `/${encodeURIComponent(actualProjectName)}/_apis/git/repositories`,
-        adoApiVersion
+        `/${encodeURIComponent(actualProjectName)}/_apis/git/repositories`
       );
 
       const listResponse = await fetch(listUrl, {
@@ -181,8 +178,7 @@ export async function fetchRepositoryInfo(
     // Try to get repository at organization level (works for GUIDs).
     const repoUrl = MappingService.buildAdoUrl(
       adoBaseUrl,
-      `/_apis/git/repositories/${repositoryId}`,
-      adoApiVersion
+      `/_apis/git/repositories/${repositoryId}`
     );
 
     const response = await fetch(repoUrl, {
@@ -223,8 +219,7 @@ export async function fetchRepositoryInfo(
         for (const projectName of allowedProjects) {
           const projectRepoUrl = MappingService.buildAdoUrl(
             adoBaseUrl,
-            `/${encodeURIComponent(projectName)}/_apis/git/repositories/${encodeURIComponent(repositoryId)}`,
-            adoApiVersion
+            `/${encodeURIComponent(projectName)}/_apis/git/repositories/${encodeURIComponent(repositoryId)}`
           );
 
           const projectResponse = await fetch(projectRepoUrl, {
@@ -248,7 +243,7 @@ export async function fetchRepositoryInfo(
       }
 
       // No allowed projects restriction - list all repositories.
-      const listUrl = MappingService.buildAdoUrl(adoBaseUrl, '/_apis/git/repositories', adoApiVersion);
+      const listUrl = MappingService.buildAdoUrl(adoBaseUrl, '/_apis/git/repositories');
 
       const listResponse = await fetch(listUrl, {
         method: 'GET',

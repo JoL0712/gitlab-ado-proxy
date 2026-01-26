@@ -33,7 +33,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -56,7 +55,6 @@ export function registerRepository(app: Hono<Env>): void {
       const refsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repo.id}/refs?filter=heads`,
-        ctx.config.adoApiVersion ?? '7.1',
         projectName
       );
 
@@ -123,7 +121,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -141,9 +138,7 @@ export function registerRepository(app: Hono<Env>): void {
       // Fetch refs from ADO.
       let refsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
-        `/${repoInfo.projectName}/_apis/git/repositories/${repoInfo.repo.id}/refs`,
-        ctx.config.adoApiVersion ?? '7.1',
-        'filter=heads'
+        `/${repoInfo.projectName}/_apis/git/repositories/${repoInfo.repo.id}/refs?filter=heads`
       );
 
       const refsResponse = await fetch(refsUrl, {
@@ -222,7 +217,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -244,7 +238,6 @@ export function registerRepository(app: Hono<Env>): void {
       const refUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/refs?filter=heads/${branchName}`,
-        ctx.config.adoApiVersion ?? '7.1',
         projectName
       );
 
@@ -320,7 +313,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -339,7 +331,6 @@ export function registerRepository(app: Hono<Env>): void {
       const sourceRefUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/refs?filter=heads/${body.ref}`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -381,7 +372,6 @@ export function registerRepository(app: Hono<Env>): void {
       const refsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/refs`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -465,7 +455,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -484,7 +473,6 @@ export function registerRepository(app: Hono<Env>): void {
       const refUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/refs?filter=heads/${branchName}`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -526,7 +514,6 @@ export function registerRepository(app: Hono<Env>): void {
       const refsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/refs`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -599,7 +586,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -620,7 +606,6 @@ export function registerRepository(app: Hono<Env>): void {
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -684,7 +669,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -707,7 +691,6 @@ export function registerRepository(app: Hono<Env>): void {
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         prPath,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -762,7 +745,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -780,7 +762,6 @@ export function registerRepository(app: Hono<Env>): void {
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests/${mrIid}`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -839,7 +820,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -871,7 +851,6 @@ export function registerRepository(app: Hono<Env>): void {
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests/${mrIid}`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -931,7 +910,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -950,7 +928,6 @@ export function registerRepository(app: Hono<Env>): void {
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests/${mrIid}`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -1046,7 +1023,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -1065,7 +1041,6 @@ export function registerRepository(app: Hono<Env>): void {
       const prUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests/${mrIid}`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -1095,7 +1070,6 @@ export function registerRepository(app: Hono<Env>): void {
       const iterationsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests/${mrIid}/iterations`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -1130,7 +1104,6 @@ export function registerRepository(app: Hono<Env>): void {
           const changesUrl = MappingService.buildAdoUrl(
             ctx.config.adoBaseUrl,
             `/_apis/git/repositories/${repoInfo.repo.id}/pullrequests/${mrIid}/iterations/${lastIteration.id}/changes`,
-            ctx.config.adoApiVersion ?? '7.1',
             repoInfo.projectName
           );
 
@@ -1203,7 +1176,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -1235,7 +1207,6 @@ export function registerRepository(app: Hono<Env>): void {
       const treeUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         treePath,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -1292,7 +1263,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -1311,7 +1281,6 @@ export function registerRepository(app: Hono<Env>): void {
       const blobUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/blobs/${sha}`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -1381,7 +1350,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1'
       );
 
       if (!repoInfo) {
@@ -1400,7 +1368,6 @@ export function registerRepository(app: Hono<Env>): void {
       const itemUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         itemPath,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -1438,7 +1405,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -1465,7 +1431,6 @@ export function registerRepository(app: Hono<Env>): void {
       const itemUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         itemPath,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -1528,7 +1493,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -1556,7 +1520,6 @@ export function registerRepository(app: Hono<Env>): void {
       const itemUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         itemPath,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -1616,7 +1579,6 @@ export function registerRepository(app: Hono<Env>): void {
       const commitsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         commitsPath,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -1675,7 +1637,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -1703,7 +1664,6 @@ export function registerRepository(app: Hono<Env>): void {
       const commitsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         commitsPath,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -1758,7 +1718,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -1777,7 +1736,6 @@ export function registerRepository(app: Hono<Env>): void {
       const commitUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/commits/${sha}`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -1852,7 +1810,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -1871,7 +1828,6 @@ export function registerRepository(app: Hono<Env>): void {
       const commitsUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/commitsbatch`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -1897,7 +1853,6 @@ export function registerRepository(app: Hono<Env>): void {
       const diffUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/diffs/commits?baseVersion=${encodeURIComponent(from)}&baseVersionType=branch&targetVersion=${encodeURIComponent(to)}&targetVersionType=branch`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -1986,7 +1941,6 @@ export function registerRepository(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 
@@ -2005,7 +1959,6 @@ export function registerRepository(app: Hono<Env>): void {
       const refUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/refs?filter=heads/${commitCreate.branch}`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 
@@ -2050,7 +2003,6 @@ export function registerRepository(app: Hono<Env>): void {
       const pushUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         `/_apis/git/repositories/${repoInfo.repo.id}/pushes`,
-        ctx.config.adoApiVersion ?? '7.1',
         repoInfo.projectName
       );
 

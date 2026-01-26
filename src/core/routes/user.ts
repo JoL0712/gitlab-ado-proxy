@@ -3,6 +3,7 @@
  */
 
 import { Hono } from 'hono';
+import { ADO_API_VERSION } from '../constants.js';
 import { MappingService } from '../mapping.js';
 import type { Env } from './env.js';
 import type { ADOUserProfile } from '../types.js';
@@ -14,12 +15,11 @@ export function registerUser(app: Hono<Env>): void {
     try {
       // Try ConnectionData API first (organization-level endpoint).
       // Note: ConnectionData requires -preview suffix for version 7.1.
-      const connectionDataApiVersion = ctx.config.adoApiVersion
-        ? `${ctx.config.adoApiVersion}-preview`
-        : '7.1-preview';
+      const connectionDataApiVersion = `${ADO_API_VERSION}-preview`;
       const connectionDataUrl = MappingService.buildAdoUrl(
         ctx.config.adoBaseUrl,
         '/_apis/ConnectionData',
+        undefined,
         connectionDataApiVersion
       );
 

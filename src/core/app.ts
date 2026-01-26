@@ -47,7 +47,7 @@ export function createApp(config: ProxyConfig): Hono<Env> {
   registerProject(app);
   registerRepository(app);
   registerMisc(app);
-  registerGit(app, config);
+  registerGit(app);
 
   return app;
 }
@@ -55,6 +55,5 @@ export function createApp(config: ProxyConfig): Hono<Env> {
 // Export a default app instance for simple usage.
 // Org and allowed projects come from tokens only.
 export const app = createApp({
-  adoApiVersion: process.env.ADO_API_VERSION ?? '7.1',
   oauthClientSecret: process.env.OAUTH_CLIENT_SECRET,
 });

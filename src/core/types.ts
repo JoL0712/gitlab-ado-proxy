@@ -410,8 +410,6 @@ export interface ADOChange {
  * Org and allowed projects are always derived from the token (OAuth or project token); no env-based overrides.
  */
 export interface ProxyConfig {
-  // Optional: Override the API version.
-  adoApiVersion?: string;
   // Optional: OAuth client secret for validating OAuth token exchange.
   oauthClientSecret?: string;
   // Optional: For local development only. When set, full request/response bodies are appended to this file.

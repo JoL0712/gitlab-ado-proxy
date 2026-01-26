@@ -23,7 +23,6 @@ export function registerProject(app: Hono<Env>): void {
         projectId,
         ctx.adoAuthHeader,
         ctx.config.adoBaseUrl,
-        ctx.config.adoApiVersion ?? '7.1',
         ctx.config.allowedProjects
       );
 

@@ -10,7 +10,6 @@ import { getStorage } from '../core/storage/index.js';
 // Read configuration from environment variables.
 // Org and allowed projects are per-token (OAuth or project token); not read from env.
 const config = {
-  adoApiVersion: process.env.ADO_API_VERSION ?? '7.1',
   oauthClientSecret: process.env.OAUTH_CLIENT_SECRET,
 };
 
