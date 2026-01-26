@@ -7,28 +7,9 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { MappingService } from '../mapping.js';
 import { getStorage } from '../storage/index.js';
-import { fetchRepositoryInfo } from '../helpers/repository.js';
+import { fetchRepositoryInfo, getCachedOrgMapping } from '../helpers/repository.js';
 import type { Env } from './env.js';
 import type { OAuthTokenData, StoredAccessToken } from '../types.js';
-
-/**
- * Get the cached org name for a namespace/project path.
- */
-async function getCachedOrgMapping(namespace: string, project: string): Promise<string | null> {
-  const storage = getStorage();
-  const key = `org_mapping:${namespace.toLowerCase()}/${project.toLowerCase()}`;
-  return await storage.get<string>(key);
-}
-
-/**
- * Store the org name mapping for a namespace/project path.
- */
-async function storeOrgMapping(namespace: string, project: string, orgName: string): Promise<void> {
-  const storage = getStorage();
-  const key = `org_mapping:${namespace.toLowerCase()}/${project.toLowerCase()}`;
-  await storage.set(key, orgName);
-  console.log('[Git] Stored org mapping:', { namespace, project, orgName });
-}
 
 async function extractGitAuth(c: Context<Env>, cachedOrgName?: string | null): Promise<{
   adoAuthHeader: string;
@@ -198,17 +179,13 @@ export function registerGit(app: Hono<Env>): void {
         repoPath,
         gitAuth.adoAuthHeader,
         gitAuth.adoBaseUrl,
-        gitAuth.allowedProjects
+        gitAuth.allowedProjects,
+        gitAuth.orgName
       );
 
       if (!repoInfo) {
         console.log('[Git Smart HTTP] Repository not found:', { repoPath });
         return c.text('Repository not found', 404);
-      }
-
-      // Store org mapping if not already cached.
-      if (!cachedOrg && gitAuth.orgName) {
-        await storeOrgMapping(namespace, project, gitAuth.orgName);
       }
 
       const adoGitUrl = `${gitAuth.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/info/refs?service=${service}`;
@@ -274,16 +251,12 @@ export function registerGit(app: Hono<Env>): void {
         repoPath,
         gitAuth.adoAuthHeader,
         gitAuth.adoBaseUrl,
-        gitAuth.allowedProjects
+        gitAuth.allowedProjects,
+        gitAuth.orgName
       );
 
       if (!repoInfo) {
         return c.text('Repository not found', 404);
-      }
-
-      // Store org mapping if not already cached.
-      if (!cachedOrg && gitAuth.orgName) {
-        await storeOrgMapping(namespace, project, gitAuth.orgName);
       }
 
       const adoGitUrl = `${gitAuth.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-upload-pack`;
@@ -350,16 +323,12 @@ export function registerGit(app: Hono<Env>): void {
         repoPath,
         gitAuth.adoAuthHeader,
         gitAuth.adoBaseUrl,
-        gitAuth.allowedProjects
+        gitAuth.allowedProjects,
+        gitAuth.orgName
       );
 
       if (!repoInfo) {
         return c.text('Repository not found', 404);
-      }
-
-      // Store org mapping if not already cached.
-      if (!cachedOrg && gitAuth.orgName) {
-        await storeOrgMapping(namespace, project, gitAuth.orgName);
       }
 
       const adoGitUrl = `${gitAuth.adoBaseUrl}/${encodeURIComponent(repoInfo.projectName)}/_git/${encodeURIComponent(repoInfo.repo.name)}/git-receive-pack`;

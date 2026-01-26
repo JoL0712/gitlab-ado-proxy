@@ -1,36 +1,16 @@
 /**
  * Web UI redirects: Redirect GitLab-style URLs to Azure DevOps.
  * 
- * Maintains a persistent mapping of namespace/repo -> org name so users
+ * Uses cached org mappings from repository lookups so users
  * don't need to provide the org name on every request after the first time.
  */
 
 import { Hono } from 'hono';
 import { MappingService } from '../mapping.js';
 import { getStorage } from '../storage/index.js';
-import { toUrlSafe } from '../helpers/repository.js';
+import { toUrlSafe, getCachedOrgMapping, storeOrgMapping } from '../helpers/repository.js';
 import type { Env } from './env.js';
 import type { OAuthTokenData, StoredAccessToken } from '../types.js';
-
-/**
- * Get the cached org name for a namespace/project path.
- */
-async function getCachedOrgMapping(namespace: string, project: string): Promise<string | null> {
-  const storage = getStorage();
-  const key = `org_mapping:${namespace.toLowerCase()}/${project.toLowerCase()}`;
-  const orgName = await storage.get<string>(key);
-  return orgName;
-}
-
-/**
- * Store the org name mapping for a namespace/project path.
- */
-async function storeOrgMapping(namespace: string, project: string, orgName: string): Promise<void> {
-  const storage = getStorage();
-  const key = `org_mapping:${namespace.toLowerCase()}/${project.toLowerCase()}`;
-  await storage.set(key, orgName);
-  console.log('[Org Mapping] Stored mapping:', { namespace, project, orgName });
-}
 
 /**
  * Extract auth info from request (similar to git.ts but for web redirects).

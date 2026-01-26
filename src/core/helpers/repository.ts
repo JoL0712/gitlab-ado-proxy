@@ -4,6 +4,7 @@
  */
 
 import { MappingService } from '../mapping.js';
+import { getStorage } from '../storage/index.js';
 import type { ADORepository } from '../types.js';
 
 /**
@@ -11,6 +12,32 @@ import type { ADORepository } from '../types.js';
  */
 export function toUrlSafe(str: string): string {
   return str.toLowerCase().replace(/\s+/g, '-');
+}
+
+/**
+ * Get the cached org name for a namespace/project path.
+ */
+export async function getCachedOrgMapping(namespace: string, project: string): Promise<string | null> {
+  const storage = getStorage();
+  const key = `org_mapping:${namespace.toLowerCase()}/${project.toLowerCase()}`;
+  return await storage.get<string>(key);
+}
+
+/**
+ * Store the org name mapping for a namespace/project path.
+ */
+export async function storeOrgMapping(namespace: string, project: string, orgName: string): Promise<void> {
+  const storage = getStorage();
+  const key = `org_mapping:${namespace.toLowerCase()}/${project.toLowerCase()}`;
+  
+  // Check if already cached to avoid unnecessary writes.
+  const existing = await storage.get<string>(key);
+  if (existing === orgName) {
+    return;
+  }
+  
+  await storage.set(key, orgName);
+  console.log('[Org Mapping] Stored:', { path: `${namespace}/${project}`, orgName });
 }
 
 /**
@@ -40,13 +67,35 @@ export function findActualProjectName(
  * - Repository name only (e.g., "my-repo")
  * - GitLab-style path (e.g., "project-name/repo-name" or "Project%20Name/repo-name")
  * Also enforces project access restrictions if allowedProjects is configured.
+ * If orgName is provided, caches the org mapping for the repo path.
  */
 export async function fetchRepositoryInfo(
   repositoryId: string,
   adoAuthHeader: string,
   adoBaseUrl: string,
-  allowedProjects?: string[]
+  allowedProjects?: string[],
+  orgName?: string
 ): Promise<{ repo: ADORepository; projectName: string } | null> {
+  // Helper to cache org mapping on successful lookup.
+  const cacheAndReturn = async (
+    repo: ADORepository,
+    projectName: string,
+    namespace: string,
+    repoName: string
+  ): Promise<{ repo: ADORepository; projectName: string }> => {
+    if (orgName) {
+      // Cache both the URL-safe path and actual names.
+      await storeOrgMapping(namespace, repoName, orgName);
+      // Also cache with actual names if different.
+      const urlSafeProject = toUrlSafe(projectName);
+      const urlSafeRepo = toUrlSafe(repo.name);
+      if (urlSafeProject !== namespace.toLowerCase() || urlSafeRepo !== repoName.toLowerCase()) {
+        await storeOrgMapping(urlSafeProject, urlSafeRepo, orgName);
+      }
+    }
+    return { repo, projectName };
+  };
+
   try {
     // URL-decode the repositoryId in case it contains encoded characters.
     const decodedId = decodeURIComponent(repositoryId);
@@ -125,7 +174,7 @@ export async function fetchRepositoryInfo(
           repoName: repo.name,
           projectName: repo.project.name,
         });
-        return { repo, projectName: repo.project.name };
+        return cacheAndReturn(repo, repo.project.name, projectPathPart, repoPathPart);
       }
 
       // If failed, try searching within the project for a repo matching the URL-safe name.
@@ -163,7 +212,7 @@ export async function fetchRepositoryInfo(
             repoName: matchingRepo.name,
             projectName: matchingRepo.project.name,
           });
-          return { repo: matchingRepo, projectName: matchingRepo.project.name };
+          return cacheAndReturn(matchingRepo, matchingRepo.project.name, projectPathPart, repoPathPart);
         }
       }
 
@@ -225,7 +274,7 @@ export async function fetchRepositoryInfo(
                   repoName: matchingRepo.name,
                   projectName: matchingRepo.project.name,
                 });
-                return { repo: matchingRepo, projectName: matchingRepo.project.name };
+                return cacheAndReturn(matchingRepo, matchingRepo.project.name, projectPathPart, repoPathPart);
               }
             }
           }
@@ -270,6 +319,10 @@ export async function fetchRepositoryInfo(
         }
       }
 
+      // Cache with URL-safe project and repo names.
+      if (orgName) {
+        await storeOrgMapping(toUrlSafe(repo.project.name), toUrlSafe(repo.name), orgName);
+      }
       return { repo, projectName: repo.project.name };
     }
 
@@ -301,6 +354,9 @@ export async function fetchRepositoryInfo(
               repoName: repo.name,
               projectName: repo.project.name,
             });
+            if (orgName) {
+              await storeOrgMapping(toUrlSafe(repo.project.name), toUrlSafe(repo.name), orgName);
+            }
             return { repo, projectName: repo.project.name };
           }
         }
@@ -325,6 +381,9 @@ export async function fetchRepositoryInfo(
         );
 
         if (matchingRepo) {
+          if (orgName) {
+            await storeOrgMapping(toUrlSafe(matchingRepo.project.name), toUrlSafe(matchingRepo.name), orgName);
+          }
           return { repo: matchingRepo, projectName: matchingRepo.project.name };
         }
       }
