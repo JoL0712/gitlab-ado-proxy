@@ -106,21 +106,38 @@ The value sent as `client_id` in OAuth is the **Azure DevOps organization name**
 
 ```
 src/
-├── core/                 # Platform-agnostic logic
-│   ├── app.ts           # Hono application and routes
-│   ├── mapping.ts       # GitLab <-> ADO mapping service
-│   ├── types.ts         # TypeScript interfaces
-│   ├── index.ts         # Core exports
-│   └── storage/         # Key-value storage abstraction
-│       ├── types.ts     # Storage interface and types
-│       ├── level.ts     # LevelDB adapter (default, local KV, prefix scans)
-│       ├── dynamodb.ts  # DynamoDB adapter (AWS Lambda/production)
-│       ├── factory.ts   # Storage factory
-│       └── index.ts     # Storage exports
-├── adapters/            # Runtime-specific entry points
-│   ├── aws-lambda.ts    # AWS Lambda handler (serverless)
-│   ├── local.ts         # Local development server
-│   └── server.ts        # Node.js server (production, bind to all interfaces)
+├── core/                    # Platform-agnostic logic
+│   ├── app.ts              # Hono application and route wiring
+│   ├── constants.ts        # Shared constants
+│   ├── mapping.ts          # GitLab <-> ADO mapping service
+│   ├── types.ts            # TypeScript interfaces
+│   ├── index.ts            # Core exports
+│   ├── helpers/
+│   │   └── repository.ts   # Repository-related helpers
+│   ├── middleware/
+│   │   └── index.ts        # Request middleware
+│   ├── routes/             # Route handlers (GitLab API emulation)
+│   │   ├── index.ts        # Route registration
+│   │   ├── access-tokens.ts
+│   │   ├── env.ts
+│   │   ├── git.ts
+│   │   ├── health.ts
+│   │   ├── misc.ts
+│   │   ├── oauth.ts
+│   │   ├── project.ts
+│   │   ├── projects.ts
+│   │   ├── repository.ts
+│   │   └── user.ts
+│   └── storage/            # Key-value storage abstraction
+│       ├── types.ts        # Storage interface and types
+│       ├── level.ts        # LevelDB adapter (default, local KV, prefix scans)
+│       ├── dynamodb.ts     # DynamoDB adapter (AWS Lambda/production)
+│       ├── factory.ts      # Storage factory
+│       └── index.ts        # Storage exports
+├── adapters/               # Runtime-specific entry points
+│   ├── aws-lambda.ts       # AWS Lambda handler (serverless)
+│   ├── local.ts            # Local development server
+│   └── server.ts           # Node.js server (production, bind to all interfaces)
 ```
 
 ## Quick Start
@@ -258,6 +275,7 @@ Use the proxy with `PRIVATE-TOKEN` or `Authorization: Bearer` only when the valu
 | `OAUTH_CLIENT_SECRET` | OAuth client secret for token exchange (optional, recommended for security) | None (accepts any) |
 | `HOST` | Bind address for production server (`server.ts`) | `0.0.0.0` |
 | `PORT` | Server port (Node.js adapters) | `3000` |
+| `REQUEST_LOG_PATH` | Path to log full request/response (local adapter defaults to `.data/requests.log` when `NODE_ENV` ≠ production) | None |
 
 Org and allowed projects are not configured via env; they come from each token (OAuth or project token). The OAuth `client_id` is always the ADO organization name.
 
@@ -346,11 +364,15 @@ npm run typecheck
 ### Project Structure
 
 - **`src/core/types.ts`**: TypeScript interfaces for both GitLab and ADO APIs.
+- **`src/core/constants.ts`**: Shared constants.
 - **`src/core/mapping.ts`**: Pure functions for converting between API formats.
-- **`src/core/app.ts`**: Hono application with route handlers.
+- **`src/core/app.ts`**: Hono application and route wiring.
+- **`src/core/helpers/`**: Shared helpers (e.g. `repository.ts`).
+- **`src/core/middleware/`**: Request middleware.
+- **`src/core/routes/`**: Route handlers for GitLab API emulation (`access-tokens`, `oauth`, `project`, `projects`, `repository`, `user`, `git`, `health`, `misc`, `env`).
 - **`src/core/storage/`**: Cloud-agnostic key-value storage abstraction.
   - `types.ts`: Storage interface definition.
   - `level.ts`: LevelDB adapter (default) for local KV storage (prefix scans, incremental writes).
   - `dynamodb.ts`: DynamoDB adapter for AWS Lambda/production.
   - `factory.ts`: Creates storage instances based on configuration.
-- **`src/adapters/`**: Runtime-specific adapters.
+- **`src/adapters/`**: Runtime-specific adapters (`aws-lambda`, `local`, `server`).
