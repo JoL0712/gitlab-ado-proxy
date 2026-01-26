@@ -281,12 +281,12 @@ export function registerOauth(
       const kv = getStorage();
 
       // Store refresh token mapping to the access token.
-      // Refresh tokens are long-lived (30 days).
+      // Refresh tokens are long-lived (90 days) and get extended on each use.
       const refreshTokenData = {
         accessToken: codeData.accessToken,
         createdAt: Date.now(),
       };
-      await kv.set(`refresh_token:${refreshToken}`, refreshTokenData, { ttl: 30 * 24 * 60 * 60 });
+      await kv.set(`refresh_token:${refreshToken}`, refreshTokenData, { ttl: 90 * 24 * 60 * 60 });
 
       return c.json({
         access_token: codeData.accessToken,
@@ -331,12 +331,13 @@ export function registerOauth(
       await kv.set(`oauth_token:${newAccessToken}`, oauthData);
 
       // Generate a new refresh token (token rotation for security).
+      // Each refresh extends the TTL by 90 days, so users never have to re-login.
       const newRefreshToken = `glrt-${randomBytes(32).toString('base64url')}`;
       const newRefreshData = {
         accessToken: newAccessToken,
         createdAt: Date.now(),
       };
-      await kv.set(`refresh_token:${newRefreshToken}`, newRefreshData, { ttl: 30 * 24 * 60 * 60 });
+      await kv.set(`refresh_token:${newRefreshToken}`, newRefreshData, { ttl: 90 * 24 * 60 * 60 });
 
       // Invalidate the old refresh token.
       await kv.delete(`refresh_token:${refreshToken}`);
