@@ -5,9 +5,9 @@ A cloud-agnostic middleware that emulates GitLab's REST API and proxies requests
 ## Features
 
 - **GitLab API Emulation**: Implements GitLab REST API endpoints that proxy to equivalent Azure DevOps APIs.
-- **Multi-Runtime Support**: Deploy to AWS Lambda or run locally with Node.js.
+- **Multi-Runtime Support**: Run as a long-running Node.js server (production or local), or deploy to AWS Lambda (serverless).
 - **Cloud-Agnostic Core**: The core logic is platform-agnostic, using only standard Web APIs.
-- **Production-Ready**: Includes Terraform configuration for AWS Lambda deployment with DynamoDB storage.
+- **Multi-Storage**: Supports in-memory, file-backed, or DynamoDB storage for tokens and sessions.
 
 ## Supported Endpoints
 
@@ -119,14 +119,9 @@ src/
 │       ├── factory.ts   # Storage factory
 │       └── index.ts     # Storage exports
 ├── adapters/            # Runtime-specific entry points
-│   ├── aws-lambda.ts    # AWS Lambda handler
-│   └── nodejs.ts        # Node.js server (local development)
-infra/
-└── terraform/           # AWS deployment configuration
-    ├── main.tf          # Main Terraform configuration (Lambda + DynamoDB)
-    ├── variables.tf     # Input variables
-    ├── outputs.tf       # Output values
-    └── terraform.tfvars.example  # Example configuration
+│   ├── aws-lambda.ts    # AWS Lambda handler (serverless)
+│   ├── local.ts         # Local development server
+│   └── server.ts        # Node.js server (production, bind to all interfaces)
 ```
 
 ## Quick Start
@@ -135,7 +130,6 @@ infra/
 
 - Node.js 20+
 - npm or yarn
-- (For deployment) Terraform 1.5+ and AWS CLI configured
 
 ### Installation
 
@@ -156,7 +150,7 @@ Create a `.env` file in the project root:
 cp .env.example .env
 ```
 
-Then edit `.env` with your values. Org and projects come from OAuth tokens; no `ADO_BASE_URL` or `ALLOWED_PROJECTS`:
+Then edit `.env` with your values. Org and projects come from OAuth tokens.
 
 ```env
 ADO_API_VERSION=7.1
@@ -201,6 +195,21 @@ npm run dev
 npm run build
 ```
 
+### Production server
+
+For deployment as a long-running server (containers, VMs, or process managers), use the production adapter. It binds to all interfaces by default so it is reachable from other hosts.
+
+```bash
+npm run build
+npm run start
+```
+
+- **`npm run start`** runs `dist/adapters/server.js`: production server (default `HOST=0.0.0.0`, `PORT=3000`).
+- **`npm run start:dev`** runs `dist/adapters/local.js`: same app as local dev (localhost-focused, optional request log).
+- **`npm run dev`** runs the local dev adapter with watch (no build step).
+
+Set `HOST` and `PORT` as needed (e.g. `HOST=0.0.0.0` for containers). Use `STORAGE_TYPE=file`, `memory`, or `dynamodb` and the corresponding env vars for storage.
+
 ## Authentication
 
 Only **OAuth-issued proxy tokens** and **project access tokens** (created via the API when using an OAuth token) are accepted. Raw Azure DevOps PATs are not accepted for API or Git requests.
@@ -218,52 +227,18 @@ Organization and allowed projects are **per-token** and come from OAuth only:
 - That set is stored with the proxy token and used for all API and Git requests made with that token.
 - Project tokens created via the API inherit the creating user’s org and allowed projects.
 
-There is no env-based `ADO_BASE_URL` or `ALLOWED_PROJECTS`; everything is derived from the token.
-
-## AWS Deployment
-
-### 1. Configure Variables
-
-```bash
-cd infra/terraform
-cp terraform.tfvars.example terraform.tfvars
-```
-
-Edit `terraform.tfvars`. Org and projects are per-token (OAuth); no `ado_base_url` or `allowed_projects`:
-
-```hcl
-aws_region   = "us-east-1"
-environment  = "prod"
-oauth_client_secret = "your-secret"   # optional, for token exchange
-```
-
-### 2. Deploy
-
-```bash
-terraform init
-terraform plan
-terraform apply
-```
-
-### 3. Get the Function URL
-
-```bash
-terraform output function_url
-```
+Org and allowed projects are derived from the token.
 
 ## Usage with Cursor Cloud
 
 ### Option 1: OAuth Flow (Recommended for Cursor Cloud)
 
-1. Deploy the proxy and get the function URL:
-   ```bash
-   terraform output function_url
-   ```
+1. Run or deploy the proxy and use its base URL (e.g., `https://your-host/api` or `http://localhost:3000` for local).
 
 2. In Cursor Cloud, go to Integrations → GitLab Self-Hosted.
 
 3. Configure:
-   - **GitLab Hostname**: Your proxy URL (e.g., `https://your-function-url.lambda-url.us-east-1.on.aws`)
+   - **GitLab Hostname**: Your proxy base URL (e.g., `https://your-host` or `http://localhost:3000`)
    - **Application ID**: Your **Azure DevOps organization name** (this is sent as `client_id` in OAuth)
    - **Secret**: Optional; set `OAUTH_CLIENT_SECRET` on the proxy and use the same value here to protect the token exchange
 
@@ -287,7 +262,8 @@ Use the proxy with `PRIVATE-TOKEN` or `Authorization: Bearer` only when the valu
 |----------|-------------|---------|
 | `ADO_API_VERSION` | Azure DevOps API version | `7.1` |
 | `OAUTH_CLIENT_SECRET` | OAuth client secret for token exchange (optional, recommended for security) | None (accepts any) |
-| `PORT` | Local server port (Node.js only) | `3000` |
+| `HOST` | Bind address for production server (`server.ts`) | `0.0.0.0` |
+| `PORT` | Server port (Node.js adapters) | `3000` |
 
 Org and allowed projects are not configured via env; they come from each token (OAuth or project token). The OAuth `client_id` is always the ADO organization name.
 
@@ -321,18 +297,6 @@ For local development, the default `file` storage persists data to `.data/storag
 # Uses file-backed storage by default (.data/storage.json)
 npm run dev
 ```
-
-### AWS Lambda (DynamoDB)
-
-The Terraform configuration automatically creates a DynamoDB table when `enable_dynamodb_storage = true` (default):
-
-```hcl
-# In terraform.tfvars
-enable_dynamodb_storage = true
-dynamodb_billing_mode   = "PAY_PER_REQUEST"  # Serverless pricing
-```
-
-The Lambda function will automatically use the DynamoDB table for persistent storage.
 
 ### Storage Interface
 
@@ -398,7 +362,3 @@ npm run typecheck
   - `dynamodb.ts`: DynamoDB adapter for AWS Lambda.
   - `factory.ts`: Creates storage instances based on configuration.
 - **`src/adapters/`**: Runtime-specific adapters.
-
-## License
-
-MIT

@@ -1,5 +1,5 @@
 /**
- * Node.js adapter for local development.
+ * Local adapter for local development.
  * Uses @hono/node-server to run the Hono app.
  */
 
