@@ -38,6 +38,37 @@ export async function storeOrgMapping(namespace: string, project: string, orgNam
   
   await storage.set(key, orgName);
   console.log('[Org Mapping] Stored:', { path: `${namespace}/${project}`, orgName });
+  
+  // Also store this org in the known orgs list.
+  await addKnownOrg(orgName);
+}
+
+/**
+ * Add an organization to the list of known/validated orgs.
+ */
+export async function addKnownOrg(orgName: string): Promise<void> {
+  const storage = getStorage();
+  const key = 'known_orgs';
+  const existing = await storage.get<string[]>(key) ?? [];
+  
+  // Check if already in the list (case-insensitive).
+  const normalized = orgName.trim();
+  if (existing.some(o => o.toLowerCase() === normalized.toLowerCase())) {
+    return;
+  }
+  
+  existing.push(normalized);
+  await storage.set(key, existing);
+  console.log('[Known Orgs] Added:', { orgName: normalized, total: existing.length });
+}
+
+/**
+ * Get the list of known/validated organization names.
+ */
+export async function getKnownOrgs(): Promise<string[]> {
+  const storage = getStorage();
+  const key = 'known_orgs';
+  return await storage.get<string[]>(key) ?? [];
 }
 
 /**
