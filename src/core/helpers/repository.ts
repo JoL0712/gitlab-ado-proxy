@@ -72,6 +72,37 @@ export async function getKnownOrgs(): Promise<string[]> {
 }
 
 /**
+ * Store a mapping from a URL-safe name to its actual ADO name.
+ * This allows reverse-mapping normalized names back to the originals
+ * when constructing ADO web URLs (e.g., "engineering-shared-tools" → "Engineering Shared Tools").
+ */
+export async function storeActualName(urlSafeName: string, actualName: string): Promise<void> {
+  // Skip if the names are identical (no mapping needed).
+  if (urlSafeName === actualName) {
+    return;
+  }
+  const storage = getStorage();
+  const key = `actual_name:${urlSafeName.toLowerCase()}`;
+  const existing = await storage.get<string>(key);
+  if (existing === actualName) {
+    return;
+  }
+  await storage.set(key, actualName);
+  console.log('[Name Mapping] Stored:', { urlSafe: urlSafeName, actual: actualName });
+}
+
+/**
+ * Look up the actual ADO name for a URL-safe name.
+ * Returns the actual name if cached, or the input name as-is if no mapping exists.
+ */
+export async function getActualName(urlSafeName: string): Promise<string> {
+  const storage = getStorage();
+  const key = `actual_name:${urlSafeName.toLowerCase()}`;
+  const actual = await storage.get<string>(key);
+  return actual ?? urlSafeName;
+}
+
+/**
  * Find the actual project name from allowed projects by matching URL-safe versions.
  */
 export function findActualProjectName(
@@ -107,19 +138,23 @@ export async function fetchRepositoryInfo(
   allowedProjects?: string[],
   orgName?: string
 ): Promise<{ repo: ADORepository; projectName: string } | null> {
-  // Helper to cache org mapping on successful lookup.
+  // Helper to cache org mapping and name mappings on successful lookup.
   const cacheAndReturn = async (
     repo: ADORepository,
     projectName: string,
     namespace: string,
     repoName: string
   ): Promise<{ repo: ADORepository; projectName: string }> => {
+    // Always cache URL-safe → actual name mappings so redirects work.
+    const urlSafeProject = toUrlSafe(projectName);
+    const urlSafeRepo = toUrlSafe(repo.name);
+    await storeActualName(urlSafeProject, projectName);
+    await storeActualName(urlSafeRepo, repo.name);
+
     if (orgName) {
       // Cache both the URL-safe path and actual names.
       await storeOrgMapping(namespace, repoName, orgName);
       // Also cache with actual names if different.
-      const urlSafeProject = toUrlSafe(projectName);
-      const urlSafeRepo = toUrlSafe(repo.name);
       if (urlSafeProject !== namespace.toLowerCase() || urlSafeRepo !== repoName.toLowerCase()) {
         await storeOrgMapping(urlSafeProject, urlSafeRepo, orgName);
       }
@@ -350,6 +385,10 @@ export async function fetchRepositoryInfo(
         }
       }
 
+      // Cache URL-safe → actual name mappings.
+      await storeActualName(toUrlSafe(repo.project.name), repo.project.name);
+      await storeActualName(toUrlSafe(repo.name), repo.name);
+
       // Cache with URL-safe project and repo names.
       if (orgName) {
         await storeOrgMapping(toUrlSafe(repo.project.name), toUrlSafe(repo.name), orgName);
@@ -385,6 +424,9 @@ export async function fetchRepositoryInfo(
               repoName: repo.name,
               projectName: repo.project.name,
             });
+            // Cache URL-safe → actual name mappings.
+            await storeActualName(toUrlSafe(repo.project.name), repo.project.name);
+            await storeActualName(toUrlSafe(repo.name), repo.name);
             if (orgName) {
               await storeOrgMapping(toUrlSafe(repo.project.name), toUrlSafe(repo.name), orgName);
             }
@@ -412,6 +454,9 @@ export async function fetchRepositoryInfo(
         );
 
         if (matchingRepo) {
+          // Cache URL-safe → actual name mappings.
+          await storeActualName(toUrlSafe(matchingRepo.project.name), matchingRepo.project.name);
+          await storeActualName(toUrlSafe(matchingRepo.name), matchingRepo.name);
           if (orgName) {
             await storeOrgMapping(toUrlSafe(matchingRepo.project.name), toUrlSafe(matchingRepo.name), orgName);
           }
