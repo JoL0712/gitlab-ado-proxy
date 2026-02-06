@@ -7,16 +7,180 @@ import { MappingService } from '../mapping.js';
 import type { Env } from './env.js';
 import type { ADORepository } from '../types.js';
 
+// Maximum per_page value allowed (matches GitLab API max).
+const MAX_PER_PAGE = 100;
+
+// Default per_page when not specified by the client.
+const DEFAULT_PER_PAGE = 100;
+
+/**
+ * Fetch all repositories from a single ADO project, following continuation tokens.
+ */
+async function fetchAllReposForProject(
+  adoBaseUrl: string,
+  adoAuthHeader: string,
+  projectName: string
+): Promise<ADORepository[]> {
+  const allRepos: ADORepository[] = [];
+  let continuationToken: string | null = null;
+
+  do {
+    let reposPath = `/${encodeURIComponent(projectName)}/_apis/git/repositories`;
+    if (continuationToken) {
+      reposPath += `?$top=100&continuationToken=${encodeURIComponent(continuationToken)}`;
+    }
+
+    const reposUrl = MappingService.buildAdoUrl(adoBaseUrl, reposPath);
+
+    try {
+      const response = await fetch(reposUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: adoAuthHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        console.warn('[fetchAllReposForProject] Failed to fetch repos:', {
+          project: projectName,
+          status: response.status,
+        });
+        break;
+      }
+
+      const contentType = response.headers.get('Content-Type') ?? '';
+      if (!contentType.includes('application/json')) {
+        console.warn('[fetchAllReposForProject] Non-JSON response:', {
+          project: projectName,
+          contentType,
+        });
+        break;
+      }
+
+      const data = (await response.json()) as { value: ADORepository[]; count: number };
+      if (data.value && data.value.length > 0) {
+        allRepos.push(...data.value);
+      }
+
+      // Check for continuation token in response headers.
+      continuationToken = response.headers.get('x-ms-continuationtoken') ?? null;
+    } catch (error) {
+      console.error('[fetchAllReposForProject] Error:', {
+        project: projectName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      break;
+    }
+  } while (continuationToken);
+
+  return allRepos;
+}
+
+/**
+ * Fetch all repositories at the organization level, following continuation tokens.
+ */
+async function fetchAllReposForOrg(
+  adoBaseUrl: string,
+  adoAuthHeader: string
+): Promise<{ repos: ADORepository[]; error: Response | null }> {
+  const allRepos: ADORepository[] = [];
+  let continuationToken: string | null = null;
+
+  do {
+    let reposPath = '/_apis/git/repositories';
+    if (continuationToken) {
+      reposPath += `?$top=100&continuationToken=${encodeURIComponent(continuationToken)}`;
+    }
+
+    const reposUrl = MappingService.buildAdoUrl(adoBaseUrl, reposPath);
+
+    const response = await fetch(reposUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: adoAuthHeader,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    // Check content type before processing.
+    const contentType = response.headers.get('Content-Type') ?? '';
+    const isJson = contentType.includes('application/json') || contentType.includes('text/json');
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[fetchAllReposForOrg] ADO API error:', {
+        status: response.status,
+        statusText: response.statusText,
+        contentType,
+        isJson,
+        error: isJson ? errorText : errorText.substring(0, 500),
+        url: reposUrl,
+      });
+
+      // Return a synthetic error response for the caller to handle.
+      return {
+        repos: [],
+        error: new Response(
+          JSON.stringify({
+            error: 'ADO API Error',
+            message: isJson
+              ? errorText
+              : `Received ${contentType} instead of JSON. This may indicate an authentication or endpoint issue.`,
+            statusCode: response.status,
+          }),
+          { status: response.status, headers: { 'Content-Type': 'application/json' } }
+        ),
+      };
+    }
+
+    // Check if response is actually JSON before parsing.
+    if (!isJson) {
+      const responseText = await response.text();
+      console.error('[fetchAllReposForOrg] Non-JSON response received:', {
+        contentType,
+        status: response.status,
+        responsePreview: responseText.substring(0, 500),
+        url: reposUrl,
+      });
+      return {
+        repos: [],
+        error: new Response(
+          JSON.stringify({
+            error: 'ADO API Error',
+            message: `Expected JSON but received ${contentType}. This may indicate an authentication or endpoint issue.`,
+            statusCode: response.status,
+          }),
+          { status: response.status, headers: { 'Content-Type': 'application/json' } }
+        ),
+      };
+    }
+
+    const data = (await response.json()) as { value: ADORepository[]; count: number };
+    if (data.value && data.value.length > 0) {
+      allRepos.push(...data.value);
+    }
+
+    // Check for continuation token in response headers.
+    continuationToken = response.headers.get('x-ms-continuationtoken') ?? null;
+  } while (continuationToken);
+
+  return { repos: allRepos, error: null };
+}
+
 export function registerProjects(app: Hono<Env>): void {
   app.get('/api/v4/projects', async (c) => {
     const { ctx } = c.var;
 
     // Query parameters.
     const search = c.req.query('search');
-    const perPage = parseInt(c.req.query('per_page') ?? '20', 10);
+    const perPage = Math.min(
+      Math.max(parseInt(c.req.query('per_page') ?? String(DEFAULT_PER_PAGE), 10) || DEFAULT_PER_PAGE, 1),
+      MAX_PER_PAGE
+    );
     const minAccessLevel = c.req.query('min_access_level');
     const archived = c.req.query('archived');
-    const page = c.req.query('page');
+    const currentPage = Math.max(parseInt(c.req.query('page') ?? '1', 10) || 1, 1);
     const pagination = c.req.query('pagination');
 
     console.log('[GET /api/v4/projects] Request:', {
@@ -24,7 +188,7 @@ export function registerProjects(app: Hono<Env>): void {
       perPage,
       minAccessLevel,
       archived,
-      page,
+      page: currentPage,
       pagination,
       allowedProjects: ctx.config.allowedProjects ?? 'all',
       queryString: c.req.url.split('?')[1] || '',
@@ -40,53 +204,10 @@ export function registerProjects(app: Hono<Env>): void {
           allowedProjects: ctx.config.allowedProjects,
         });
 
-        // Fetch repositories from each allowed project in parallel.
-        const projectFetches = ctx.config.allowedProjects.map(async (projectName) => {
-          const reposUrl = MappingService.buildAdoUrl(
-            ctx.config.adoBaseUrl,
-            `/${encodeURIComponent(projectName)}/_apis/git/repositories`
-          );
-
-          try {
-            const response = await fetch(reposUrl, {
-              method: 'GET',
-              headers: {
-                Authorization: ctx.adoAuthHeader,
-                'Content-Type': 'application/json',
-              },
-            });
-
-            if (!response.ok) {
-              console.warn('[GET /api/v4/projects] Failed to fetch repos for project:', {
-                project: projectName,
-                status: response.status,
-              });
-              return [];
-            }
-
-            const contentType = response.headers.get('Content-Type') ?? '';
-            if (!contentType.includes('application/json')) {
-              console.warn('[GET /api/v4/projects] Non-JSON response for project:', {
-                project: projectName,
-                contentType,
-              });
-              return [];
-            }
-
-            const data = (await response.json()) as { value: ADORepository[]; count: number };
-            console.log('[GET /api/v4/projects] Fetched repos for project:', {
-              project: projectName,
-              count: data.value?.length ?? 0,
-            });
-            return data.value ?? [];
-          } catch (error) {
-            console.error('[GET /api/v4/projects] Error fetching repos for project:', {
-              project: projectName,
-              error: error instanceof Error ? error.message : String(error),
-            });
-            return [];
-          }
-        });
+        // Fetch all repositories from each allowed project in parallel.
+        const projectFetches = ctx.config.allowedProjects.map((projectName) =>
+          fetchAllReposForProject(ctx.config.adoBaseUrl, ctx.adoAuthHeader, projectName)
+        );
 
         const projectResults = await Promise.all(projectFetches);
         repos = projectResults.flat();
@@ -97,68 +218,17 @@ export function registerProjects(app: Hono<Env>): void {
         });
       } else {
         // No project restrictions - fetch all repositories in the organization.
-        const reposUrl = MappingService.buildAdoUrl(
-          ctx.config.adoBaseUrl,
-          '/_apis/git/repositories'
-        );
+        const result = await fetchAllReposForOrg(ctx.config.adoBaseUrl, ctx.adoAuthHeader);
 
-        const response = await fetch(reposUrl, {
-          method: 'GET',
-          headers: {
-            Authorization: ctx.adoAuthHeader,
-            'Content-Type': 'application/json',
-          },
-        });
-
-        // Check content type before processing.
-        const contentType = response.headers.get('Content-Type') ?? '';
-        const isJson = contentType.includes('application/json') || contentType.includes('text/json');
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error('[GET /api/v4/projects] ADO API error:', {
-            status: response.status,
-            statusText: response.statusText,
-            contentType,
-            isJson,
-            error: isJson ? errorText : errorText.substring(0, 500),
-            url: reposUrl,
-          });
-          return c.json(
-            {
-              error: 'ADO API Error',
-              message: isJson ? errorText : `Received ${contentType} instead of JSON. This may indicate an authentication or endpoint issue.`,
-              statusCode: response.status,
-            },
-            response.status as 400 | 401 | 403 | 404 | 500
-          );
+        if (result.error) {
+          const errorBody = await result.error.json();
+          return c.json(errorBody, result.error.status as 400 | 401 | 403 | 404 | 500);
         }
 
-        // Check if response is actually JSON before parsing.
-        if (!isJson) {
-          const responseText = await response.text();
-          console.error('[GET /api/v4/projects] Non-JSON response received:', {
-            contentType,
-            status: response.status,
-            responsePreview: responseText.substring(0, 500),
-            url: reposUrl,
-          });
-          return c.json(
-            {
-              error: 'ADO API Error',
-              message: `Expected JSON but received ${contentType}. This may indicate an authentication or endpoint issue.`,
-              statusCode: response.status,
-            },
-            response.status as 400 | 401 | 403 | 404 | 500
-          );
-        }
-
-        const data = (await response.json()) as { value: ADORepository[]; count: number };
-        repos = data.value;
+        repos = result.repos;
 
         console.log('[GET /api/v4/projects] ADO API response:', {
-          totalRepos: data.count,
-          returnedRepos: repos.length,
+          totalRepos: repos.length,
           firstRepo: repos[0]?.name,
         });
       }
@@ -179,13 +249,19 @@ export function registerProjects(app: Hono<Env>): void {
         });
       }
 
-      // Limit results.
-      const beforeLimit = repos.length;
-      repos = repos.slice(0, perPage);
+      // Calculate pagination.
+      const totalCount = repos.length;
+      const totalPages = Math.max(Math.ceil(totalCount / perPage), 1);
+      const offset = (currentPage - 1) * perPage;
+      const paginatedRepos = repos.slice(offset, offset + perPage);
+
       console.log('[GET /api/v4/projects] After pagination:', {
-        before: beforeLimit,
-        after: repos.length,
+        totalCount,
+        totalPages,
+        currentPage,
         perPage,
+        offset,
+        returnedCount: paginatedRepos.length,
       });
 
       // Get proxy base URL from request for constructing web_url.
@@ -193,14 +269,25 @@ export function registerProjects(app: Hono<Env>): void {
       const proxyBaseUrl = `${requestUrl.protocol}//${requestUrl.host}`;
 
       // Map to GitLab projects format.
-      const projects = repos.map((repo) => MappingService.mapRepositoryToProject(repo, proxyBaseUrl));
+      const projects = paginatedRepos.map((repo) => MappingService.mapRepositoryToProject(repo, proxyBaseUrl));
 
       console.log('[GET /api/v4/projects] Success:', {
         returnedProjects: projects.length,
-        projectIds: projects.map((p) => p.id),
         projectNames: projects.map((p) => p.name),
         samplePathWithNamespace: projects[0]?.path_with_namespace,
       });
+
+      // Set GitLab-style pagination headers.
+      c.header('X-Total', String(totalCount));
+      c.header('X-Total-Pages', String(totalPages));
+      c.header('X-Per-Page', String(perPage));
+      c.header('X-Page', String(currentPage));
+      if (currentPage < totalPages) {
+        c.header('X-Next-Page', String(currentPage + 1));
+      }
+      if (currentPage > 1) {
+        c.header('X-Prev-Page', String(currentPage - 1));
+      }
 
       return c.json(projects);
     } catch (error) {
