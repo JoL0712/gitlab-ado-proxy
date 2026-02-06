@@ -6,7 +6,7 @@
  */
 
 import { Hono } from 'hono';
-import { getCachedOrgMapping, storeOrgMapping, getKnownOrgs } from '../helpers/repository.js';
+import { getCachedOrgMapping, storeOrgMapping, getKnownOrgs, getActualName } from '../helpers/repository.js';
 import type { Env } from './env.js';
 
 /**
@@ -132,20 +132,25 @@ function generateOrgSelectorPage(
 /**
  * Helper to handle redirect with org mapping.
  * No auth needed - just redirect to ADO and let them handle auth.
+ * Resolves URL-safe names back to actual ADO names before building the URL.
  */
 async function handleRedirect(
   c: any,
   namespace: string,
   project: string,
   originalPath: string,
-  buildAdoUrl: (orgName: string) => string
+  buildAdoUrl: (orgName: string, actualNamespace: string, actualProject: string) => string
 ): Promise<Response> {
   // Check for cached org mapping.
   const cachedOrg = await getCachedOrgMapping(namespace, project);
 
   if (cachedOrg) {
+    // Resolve URL-safe names back to actual ADO names.
+    const actualNamespace = await getActualName(namespace);
+    const actualProject = await getActualName(project);
+
     // We have the org - redirect directly to ADO.
-    const adoUrl = buildAdoUrl(cachedOrg);
+    const adoUrl = buildAdoUrl(cachedOrg, actualNamespace, actualProject);
     return c.redirect(adoUrl);
   }
 
@@ -184,8 +189,8 @@ export function registerRedirects(app: Hono<Env>): void {
     const iid = c.req.param('iid');
     const originalPath = `/${namespace}/${project}/-/merge_requests/${iid}`;
 
-    return handleRedirect(c, namespace, project, originalPath, (orgName) => {
-      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(namespace)}/_git/${encodeURIComponent(project)}/pullrequest/${iid}`;
+    return handleRedirect(c, namespace, project, originalPath, (orgName, actualNamespace, actualProject) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualNamespace)}/_git/${encodeURIComponent(actualProject)}/pullrequest/${iid}`;
       console.log('[Redirect] Merge request:', { from: originalPath, to: url });
       return url;
     });
@@ -202,8 +207,8 @@ export function registerRedirects(app: Hono<Env>): void {
       return c.notFound();
     }
 
-    return handleRedirect(c, namespace, project, originalPath, (orgName) => {
-      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(namespace)}/_git/${encodeURIComponent(project)}`;
+    return handleRedirect(c, namespace, project, originalPath, (orgName, actualNamespace, actualProject) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualNamespace)}/_git/${encodeURIComponent(actualProject)}`;
       console.log('[Redirect] Repository:', { from: originalPath, to: url });
       return url;
     });
@@ -216,8 +221,8 @@ export function registerRedirects(app: Hono<Env>): void {
     const sha = c.req.param('sha');
     const originalPath = `/${namespace}/${project}/-/commit/${sha}`;
 
-    return handleRedirect(c, namespace, project, originalPath, (orgName) => {
-      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(namespace)}/_git/${encodeURIComponent(project)}/commit/${sha}`;
+    return handleRedirect(c, namespace, project, originalPath, (orgName, actualNamespace, actualProject) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualNamespace)}/_git/${encodeURIComponent(actualProject)}/commit/${sha}`;
       console.log('[Redirect] Commit:', { from: originalPath, to: url });
       return url;
     });
@@ -230,8 +235,8 @@ export function registerRedirects(app: Hono<Env>): void {
     const ref = c.req.param('ref');
     const originalPath = `/${namespace}/${project}/-/tree/${ref}`;
 
-    return handleRedirect(c, namespace, project, originalPath, (orgName) => {
-      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(namespace)}/_git/${encodeURIComponent(project)}?version=GB${encodeURIComponent(ref)}`;
+    return handleRedirect(c, namespace, project, originalPath, (orgName, actualNamespace, actualProject) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualNamespace)}/_git/${encodeURIComponent(actualProject)}?version=GB${encodeURIComponent(ref)}`;
       console.log('[Redirect] Tree:', { from: originalPath, to: url });
       return url;
     });
@@ -249,8 +254,8 @@ export function registerRedirects(app: Hono<Env>): void {
     const ref = slashIndex !== -1 ? refAndPath.substring(0, slashIndex) : refAndPath;
     const path = slashIndex !== -1 ? refAndPath.substring(slashIndex) : '';
 
-    return handleRedirect(c, namespace, project, originalPath, (orgName) => {
-      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(namespace)}/_git/${encodeURIComponent(project)}?path=${encodeURIComponent(path)}&version=GB${encodeURIComponent(ref)}`;
+    return handleRedirect(c, namespace, project, originalPath, (orgName, actualNamespace, actualProject) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualNamespace)}/_git/${encodeURIComponent(actualProject)}?path=${encodeURIComponent(path)}&version=GB${encodeURIComponent(ref)}`;
       console.log('[Redirect] Blob:', { from: originalPath, to: url });
       return url;
     });
@@ -262,8 +267,8 @@ export function registerRedirects(app: Hono<Env>): void {
     const project = c.req.param('project');
     const originalPath = `/${namespace}/${project}/-/branches`;
 
-    return handleRedirect(c, namespace, project, originalPath, (orgName) => {
-      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(namespace)}/_git/${encodeURIComponent(project)}/branches`;
+    return handleRedirect(c, namespace, project, originalPath, (orgName, actualNamespace, actualProject) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualNamespace)}/_git/${encodeURIComponent(actualProject)}/branches`;
       console.log('[Redirect] Branches:', { from: originalPath, to: url });
       return url;
     });
@@ -279,8 +284,8 @@ export function registerRedirects(app: Hono<Env>): void {
     // GitLab format: base...head.
     const [base, head] = refs.includes('...') ? refs.split('...') : [refs, 'main'];
 
-    return handleRedirect(c, namespace, project, originalPath, (orgName) => {
-      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(namespace)}/_git/${encodeURIComponent(project)}/branchCompare?baseVersion=GB${encodeURIComponent(base)}&targetVersion=GB${encodeURIComponent(head)}`;
+    return handleRedirect(c, namespace, project, originalPath, (orgName, actualNamespace, actualProject) => {
+      const url = `https://dev.azure.com/${encodeURIComponent(orgName)}/${encodeURIComponent(actualNamespace)}/_git/${encodeURIComponent(actualProject)}/branchCompare?baseVersion=GB${encodeURIComponent(base)}&targetVersion=GB${encodeURIComponent(head)}`;
       console.log('[Redirect] Compare:', { from: originalPath, to: url });
       return url;
     });

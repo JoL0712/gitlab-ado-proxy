@@ -4,6 +4,7 @@
 
 import { Hono } from 'hono';
 import { MappingService } from '../mapping.js';
+import { storeActualName } from '../helpers/repository.js';
 import type { Env } from './env.js';
 import type { ADORepository } from '../types.js';
 
@@ -251,6 +252,22 @@ export function registerProjects(app: Hono<Env>): void {
           after: repos.length,
           searchTerm: search,
         });
+      }
+
+      // Cache URL-safe → actual name mappings for all repos.
+      // Use a Set to avoid duplicate storage calls.
+      const seenNames = new Set<string>();
+      for (const repo of repos) {
+        const urlSafeProject = MappingService.toUrlSafePath(repo.project.name);
+        const urlSafeRepo = MappingService.toUrlSafePath(repo.name);
+        if (!seenNames.has(urlSafeProject)) {
+          seenNames.add(urlSafeProject);
+          await storeActualName(urlSafeProject, repo.project.name);
+        }
+        if (!seenNames.has(urlSafeRepo)) {
+          seenNames.add(urlSafeRepo);
+          await storeActualName(urlSafeRepo, repo.name);
+        }
       }
 
       // Calculate pagination.
