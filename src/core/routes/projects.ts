@@ -13,7 +13,8 @@ export function registerProjects(app: Hono<Env>): void {
 
     // Query parameters.
     const search = c.req.query('search');
-    const perPage = parseInt(c.req.query('per_page') ?? '20', 10);
+    // Default to 100 repos per page, max 1000.
+    const perPage = Math.min(parseInt(c.req.query('per_page') ?? '100', 10), 1000);
     const minAccessLevel = c.req.query('min_access_level');
     const archived = c.req.query('archived');
     const page = c.req.query('page');
@@ -42,9 +43,10 @@ export function registerProjects(app: Hono<Env>): void {
 
         // Fetch repositories from each allowed project in parallel.
         const projectFetches = ctx.config.allowedProjects.map(async (projectName) => {
+          // Request up to 1000 repos per project.
           const reposUrl = MappingService.buildAdoUrl(
             ctx.config.adoBaseUrl,
-            `/${encodeURIComponent(projectName)}/_apis/git/repositories`
+            `/${encodeURIComponent(projectName)}/_apis/git/repositories?$top=1000`
           );
 
           try {
@@ -97,9 +99,10 @@ export function registerProjects(app: Hono<Env>): void {
         });
       } else {
         // No project restrictions - fetch all repositories in the organization.
+        // Request up to 1000 repos.
         const reposUrl = MappingService.buildAdoUrl(
           ctx.config.adoBaseUrl,
-          '/_apis/git/repositories'
+          '/_apis/git/repositories?$top=1000'
         );
 
         const response = await fetch(reposUrl, {
