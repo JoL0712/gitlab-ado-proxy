@@ -7,11 +7,14 @@ import { MappingService } from '../mapping.js';
 import type { Env } from './env.js';
 import type { ADORepository } from '../types.js';
 
-// Maximum per_page value allowed (matches GitLab API max).
-const MAX_PER_PAGE = 100;
+// Maximum per_page value allowed.
+const MAX_PER_PAGE = 1000;
 
 // Default per_page when not specified by the client.
 const DEFAULT_PER_PAGE = 100;
+
+// Number of repos to request per ADO API call.
+const ADO_TOP = 1000;
 
 /**
  * Fetch all repositories from a single ADO project, following continuation tokens.
@@ -25,9 +28,9 @@ async function fetchAllReposForProject(
   let continuationToken: string | null = null;
 
   do {
-    let reposPath = `/${encodeURIComponent(projectName)}/_apis/git/repositories`;
+    let reposPath = `/${encodeURIComponent(projectName)}/_apis/git/repositories?$top=${ADO_TOP}`;
     if (continuationToken) {
-      reposPath += `?$top=100&continuationToken=${encodeURIComponent(continuationToken)}`;
+      reposPath += `&continuationToken=${encodeURIComponent(continuationToken)}`;
     }
 
     const reposUrl = MappingService.buildAdoUrl(adoBaseUrl, reposPath);
@@ -88,9 +91,9 @@ async function fetchAllReposForOrg(
   let continuationToken: string | null = null;
 
   do {
-    let reposPath = '/_apis/git/repositories';
+    let reposPath = `/_apis/git/repositories?$top=${ADO_TOP}`;
     if (continuationToken) {
-      reposPath += `?$top=100&continuationToken=${encodeURIComponent(continuationToken)}`;
+      reposPath += `&continuationToken=${encodeURIComponent(continuationToken)}`;
     }
 
     const reposUrl = MappingService.buildAdoUrl(adoBaseUrl, reposPath);
@@ -174,6 +177,7 @@ export function registerProjects(app: Hono<Env>): void {
 
     // Query parameters.
     const search = c.req.query('search');
+    // Default to 100 repos per page, max 1000.
     const perPage = Math.min(
       Math.max(parseInt(c.req.query('per_page') ?? String(DEFAULT_PER_PAGE), 10) || DEFAULT_PER_PAGE, 1),
       MAX_PER_PAGE
